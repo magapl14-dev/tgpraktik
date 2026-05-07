@@ -1,0 +1,422 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Мои практики</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { background: #0a0c14; }
+  body { margin: 0; -webkit-tap-highlight-color: transparent; }
+  .font-display { font-family: 'Cormorant Garamond', Georgia, serif; }
+  .font-body    { font-family: 'Manrope', system-ui, sans-serif; color: #f4ead5; }
+  .app-bg {
+    background:
+      radial-gradient(ellipse at 20% 0%, rgba(212,168,87,0.08), transparent 50%),
+      radial-gradient(ellipse at 80% 100%, rgba(127,179,211,0.05), transparent 50%),
+      linear-gradient(180deg, #0d1018 0%, #0a0c14 100%);
+    min-height: 100vh; min-height: 100dvh;
+  }
+  .card {
+    background: linear-gradient(180deg, rgba(255,250,235,0.04) 0%, rgba(255,250,235,0.02) 100%);
+    border: 1px solid rgba(244,234,213,0.08);
+  }
+  .card-done { background: linear-gradient(180deg, rgba(212,168,87,0.10), rgba(212,168,87,0.04));
+               border: 1px solid rgba(212,168,87,0.25); }
+  .input-field { background: rgba(255,250,235,0.04); border: 1px solid rgba(244,234,213,0.12);
+                 color: #f4ead5; transition: all 0.2s; }
+  .input-field:focus { outline: none; border-color: rgba(212,168,87,0.5); }
+  .fade-in { animation: fadeIn 0.3s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+  .pulse-undone { animation: pulseSoft 3s ease-in-out infinite; }
+  @keyframes pulseSoft { 0%,100% { opacity: 1; } 50% { opacity: 0.75; } }
+  .tab-active { color: #d4a857; }
+</style>
+</head>
+<body class="font-body app-bg pb-24">
+<div id="root" style="padding: 0 16px; max-width: 720px; margin: 0 auto;">
+  <div style="text-align: center; padding: 60px 0; opacity: 0.6;" class="font-display text-xl">загружаем...</div>
+</div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+const tg = window.Telegram?.WebApp;
+const initData = tg?.initData || '';
+if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor('#0a0c14'); }
+
+// ─── API ───
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, {
+    ...opts,
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Init-Data': initData,
+      ...(opts.headers || {}),
+    },
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
+  return r.json();
+};
+
+// ─── Иконки SVG ───
+const Ic = ({d, size=18, sw=2}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={sw} strokeLinecap="round" strokeLinejoin="round" dangerouslySetInnerHTML={{__html: d}}/>;
+const Plus = (p) => <Ic d='<path d="M5 12h14"/><path d="M12 5v14"/>' {...p}/>;
+const Minus = (p) => <Ic d='<path d="M5 12h14"/>' {...p}/>;
+const Check = (p) => <Ic d='<path d="M20 6 9 17l-5-5"/>' {...p}/>;
+const Circle = (p) => <Ic d='<circle cx="12" cy="12" r="10"/>' {...p}/>;
+const Flame = (p) => <Ic d='<path d="M8.5 14.5A2.5 2.5 0 0 0 11 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 1 1-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 0 0 2.5 2.5z"/>' {...p}/>;
+const Target = (p) => <Ic d='<circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/>' {...p}/>;
+const Trophy = (p) => <Ic d='<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>' {...p}/>;
+const Sparkles = (p) => <Ic d='<path d="m12 3-1.9 5.8a2 2 0 0 1-1.287 1.288L3 12l5.8 1.9a2 2 0 0 1 1.288 1.287L12 21l1.9-5.8a2 2 0 0 1 1.287-1.288L21 12l-5.8-1.9a2 2 0 0 1-1.288-1.287Z"/>' {...p}/>;
+const ChevronRight = (p) => <Ic d='<path d="m9 18 6-6-6-6"/>' {...p}/>;
+const Calendar = (p) => <Ic d='<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" x2="16" y1="2" y2="6"/><line x1="8" x2="8" y1="2" y2="6"/><line x1="3" x2="21" y1="10" y2="10"/>' {...p}/>;
+const X = (p) => <Ic d='<path d="M18 6 6 18"/><path d="m6 6 12 12"/>' {...p}/>;
+
+// ─── Утилиты ───
+const PALETTE = { sage: '#a3b18a', amber: '#d4a857', rose: '#c98e95', azure: '#7fb3d3',
+                  plum: '#b399c4', rust: '#cf8770', mint: '#88c4b8', gold: '#e0bd6a' };
+const todayKey = () => new Date().toISOString().slice(0, 10);
+const dayN = (n) => n === 1 ? 'день' : n < 5 ? 'дня' : 'дней';
+
+const isDone = (p, e) => !e ? false : p.type === 'binary' ? !!e.completed : (e.count || 0) >= (p.target || 1);
+
+const calcStreak = (p, entries) => {
+  let s = 0; const d = new Date(); let k = d.toISOString().slice(0,10);
+  if (!isDone(p, entries[`${k}_${p.id}`])) { d.setDate(d.getDate() - 1); k = d.toISOString().slice(0,10); }
+  while (isDone(p, entries[`${k}_${p.id}`])) { s++; d.setDate(d.getDate() - 1); k = d.toISOString().slice(0,10); }
+  return s;
+};
+
+// ─── Главный компонент ───
+function App() {
+  const [me, setMe] = useState(null);
+  const [data, setData] = useState({ practices: [], entries: {} });
+  const [catalog, setCatalog] = useState([]);
+  const [board, setBoard] = useState([]);
+  const [tab, setTab] = useState('today');
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+  const [joining, setJoining] = useState(null); // practice obj
+
+  const refresh = async () => {
+    try {
+      const [m, my, cat] = await Promise.all([
+        api('/api/me'), api('/api/my'), api('/api/practices')
+      ]);
+      setMe(m); setData(my); setCatalog(cat);
+    } catch (e) { setErr(e.message); }
+  };
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await refresh();
+        const lb = await api('/api/leaderboard?period=month');
+        setBoard(lb);
+      } catch (e) { setErr(e.message); }
+      setLoading(false);
+    })();
+  }, []);
+
+  if (loading) {
+    return <div className="text-center pt-20 opacity-60 font-display text-xl">загружаем...</div>;
+  }
+
+  if (err && !me) {
+    return (
+      <div className="text-center pt-20 px-6">
+        <p className="opacity-60 mb-2">Не получилось войти</p>
+        <p className="text-sm opacity-40">{err}</p>
+        <p className="text-xs opacity-30 mt-4">Открой это приложение из Telegram-бота, не напрямую в браузере.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {tab === 'today' && <TodayTab data={data} onChange={refresh}/>}
+      {tab === 'catalog' && <CatalogTab catalog={catalog} joined={data.practices} onJoin={setJoining}/>}
+      {tab === 'board' && <BoardTab board={board} me={me} onPeriod={async(p) => {
+        try { setBoard(await api(`/api/leaderboard?period=${p}`)); } catch (e) { setErr(e.message); }
+      }}/>}
+      <TabBar tab={tab} setTab={setTab} isAdmin={me?.is_admin}/>
+      {joining && <JoinSheet practice={joining} onClose={() => setJoining(null)} onJoined={async () => {
+        setJoining(null); await refresh();
+      }}/>}
+    </div>
+  );
+}
+
+// ─── Сегодня ───
+function TodayTab({ data, onChange }) {
+  const today = todayKey();
+  const total = data.practices.length;
+  const done = data.practices.filter((p) => isDone(p, data.entries[`${today}_${p.id}`])).length;
+  const pct = total ? Math.round(done/total*100) : 0;
+
+  if (!total) {
+    return (
+      <div className="text-center py-20 px-4 fade-in">
+        <Sparkles size={40} style={{color:'#d4a857'}} className="mx-auto mb-4"/>
+        <h2 className="font-display text-2xl mb-2">Пока пусто</h2>
+        <p className="opacity-60 text-sm max-w-xs mx-auto">
+          Перейди в каталог и присоединись к практикам, которые хочешь делать.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fade-in pt-6">
+      <header className="mb-6">
+        <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Сегодня</p>
+        <h1 className="font-display text-4xl font-light leading-tight">Мои <em style={{color:'#d4a857'}}>практики</em></h1>
+        <div className="mt-4">
+          <div className="flex items-baseline justify-between mb-1.5 text-sm">
+            <span className="opacity-70">Прогресс</span>
+            <span className="font-display text-xl"><span style={{color:'#d4a857'}}>{done}</span><span className="opacity-40"> / {total}</span></span>
+          </div>
+          <div className="h-1 rounded-full overflow-hidden" style={{background:'rgba(244,234,213,0.08)'}}>
+            <div className="h-full transition-all duration-500" style={{width:`${pct}%`, background:'linear-gradient(90deg, #d4a857, #e0bd6a)'}}/>
+          </div>
+        </div>
+      </header>
+
+      <div className="space-y-3">
+        {data.practices.map((p) => (
+          <PracticeRow key={p.id} practice={p} entry={data.entries[`${today}_${p.id}`]}
+                       streak={calcStreak(p, data.entries)} onChange={onChange}/>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PracticeRow({ practice, entry, streak, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const accent = PALETTE[practice.palette] || PALETTE.amber;
+  const done = isDone(practice, entry);
+  const count = entry?.count || 0;
+
+  const updateBinary = async () => {
+    if (busy) return; setBusy(true);
+    try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+      practice_id: practice.id, completed: !done }) }); await onChange(); }
+    finally { setBusy(false); }
+  };
+
+  const updateCount = async (delta) => {
+    if (busy) return; setBusy(true);
+    const newCount = Math.max(0, count + delta);
+    try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+      practice_id: practice.id, count: newCount }) }); await onChange(); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <div className={`card ${done ? 'card-done' : 'pulse-undone'} rounded-2xl p-4`}>
+      <div className="flex items-center gap-3">
+        <div className="flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center text-2xl overflow-hidden"
+             style={{background: practice.photo ? 'transparent' : '#3d3520', border:`1px solid ${accent}33`}}>
+          {practice.photo ? <img src={practice.photo} alt="" className="w-full h-full object-cover"/> : practice.icon}
+        </div>
+        <div className="flex-1 min-w-0">
+          <h3 className="font-display text-lg leading-tight truncate" style={{color: done ? '#d4a857' : '#f4ead5'}}>{practice.name}</h3>
+          <div className="flex items-center gap-3 mt-0.5 text-xs opacity-60">
+            {streak > 0 && <span className="flex items-center gap-1"><Flame size={11}/>{streak} {dayN(streak)}</span>}
+            {practice.type === 'count' && <span className="flex items-center gap-1"><Target size={11}/>{practice.target}{practice.unit ? ' '+practice.unit : ''}</span>}
+          </div>
+        </div>
+        {practice.type === 'binary' ? (
+          <button onClick={updateBinary} disabled={busy}
+            className="w-11 h-11 rounded-full flex items-center justify-center transition-transform active:scale-90"
+            style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
+                    color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
+            {done ? <Check size={18} sw={3}/> : <Circle size={18} sw={1.5}/>}
+          </button>
+        ) : (
+          <div className="flex items-center gap-1 rounded-full px-1 py-1" style={{background:'rgba(244,234,213,0.05)', border:'1px solid rgba(244,234,213,0.1)'}}>
+            <button onClick={() => updateCount(-1)} disabled={busy || count === 0} className="w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-30"><Minus size={14}/></button>
+            <div className="min-w-[2.2rem] text-center font-display leading-none" style={{color: done ? '#d4a857' : '#f4ead5'}}>{count}<span className="text-[10px] opacity-50">/{practice.target}</span></div>
+            <button onClick={() => updateCount(1)} disabled={busy} className="w-7 h-7 rounded-full flex items-center justify-center"
+              style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.08)',
+                      color: done ? '#1a1410' : '#f4ead5'}}><Plus size={14} sw={2.5}/></button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Каталог ───
+function CatalogTab({ catalog, joined, onJoin }) {
+  const joinedIds = new Set(joined.map((p) => p.id));
+  return (
+    <div className="fade-in pt-6">
+      <header className="mb-6">
+        <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Каталог</p>
+        <h1 className="font-display text-4xl font-light leading-tight">Выбери <em style={{color:'#d4a857'}}>практику</em></h1>
+        <p className="opacity-60 text-sm mt-2">Присоединись к практикам и установи период. Нажми на карточку, чтобы выбрать.</p>
+      </header>
+      {catalog.length === 0 && <p className="opacity-50 text-center py-12">Пока нет ни одной практики. Админ ещё их добавляет.</p>}
+      <div className="space-y-3">
+        {catalog.map((p) => {
+          const accent = PALETTE[p.palette] || PALETTE.amber;
+          const isJoined = joinedIds.has(p.id);
+          return (
+            <button key={p.id} onClick={() => !isJoined && onJoin(p)} disabled={isJoined}
+              className={`card rounded-2xl p-4 w-full text-left transition-all ${!isJoined ? 'active:scale-[0.99]' : 'opacity-60'}`}>
+              <div className="flex items-center gap-3">
+                <div className="w-14 h-14 rounded-xl flex items-center justify-center text-3xl overflow-hidden flex-shrink-0"
+                     style={{background: p.photo ? 'transparent' : '#3d3520', border:`1px solid ${accent}33`}}>
+                  {p.photo ? <img src={p.photo} alt="" className="w-full h-full object-cover"/> : p.icon}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <h3 className="font-display text-xl leading-tight">{p.name}</h3>
+                  {p.description && <p className="text-xs opacity-60 mt-0.5 line-clamp-2">{p.description}</p>}
+                  <div className="flex items-center gap-2 mt-1 text-[11px] opacity-50">
+                    {p.type === 'count' ? <span>цель: {p.target}{p.unit ? ' '+p.unit : ''}</span> : <span>отметка факта</span>}
+                    {p.max_reminders > 0 && <span>• до {p.max_reminders} напом.</span>}
+                  </div>
+                </div>
+                {isJoined ? <span className="text-xs px-2 py-1 rounded-full" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>в моих</span>
+                          : <ChevronRight size={20} className="opacity-40"/>}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function JoinSheet({ practice, onClose, onJoined }) {
+  const [period, setPeriod] = useState('month');
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try { await api('/api/my/join', { method:'POST', body: JSON.stringify({
+      practice_id: practice.id, period_type: period }) }); await onJoined(); }
+    catch (e) { alert(e.message); setBusy(false); }
+  };
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.6)'}} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-3xl p-6 fade-in" style={{background:'#161824'}} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-display text-2xl">{practice.name}</h2>
+          <button onClick={onClose} className="opacity-60"><X size={20}/></button>
+        </div>
+        {practice.description && <p className="text-sm opacity-70 mb-4">{practice.description}</p>}
+        <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Период</p>
+        <div className="grid grid-cols-3 gap-2 mb-6">
+          {[['week','Неделя'],['month','Месяц'],['forever','Без срока']].map(([v,l]) => (
+            <button key={v} onClick={() => setPeriod(v)}
+              className="py-3 rounded-xl text-sm transition-all"
+              style={{
+                background: period === v ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+                border: `1px solid ${period === v ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.1)'}`,
+                color: period === v ? '#d4a857' : '#f4ead5',
+              }}>{l}</button>
+          ))}
+        </div>
+        <button onClick={submit} disabled={busy}
+          className="w-full py-3.5 rounded-full font-medium transition-transform active:scale-[0.99] disabled:opacity-50"
+          style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+          {busy ? 'Присоединяемся...' : 'Присоединиться'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Рейтинг ───
+function BoardTab({ board, me, onPeriod }) {
+  const [period, setPeriod] = useState('month');
+  const myRow = board.find((r) => r.user_id === me?.id);
+  return (
+    <div className="fade-in pt-6">
+      <header className="mb-6">
+        <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Рейтинг</p>
+        <h1 className="font-display text-4xl font-light leading-tight">Твоё <em style={{color:'#d4a857'}}>место</em></h1>
+        {myRow && (
+          <div className="card rounded-2xl p-4 mt-4 flex items-center gap-3" style={{borderColor:'rgba(212,168,87,0.3)'}}>
+            <div className="font-display text-3xl" style={{color:'#d4a857'}}>#{myRow.rank}</div>
+            <div className="flex-1">
+              <div className="text-sm opacity-70">{myRow.done} из {myRow.plan} практико-дней</div>
+              <div className="font-display text-2xl">{myRow.pct}%</div>
+            </div>
+            <Trophy size={28} style={{color:'#d4a857'}}/>
+          </div>
+        )}
+      </header>
+      <div className="flex gap-2 mb-4">
+        {[['week','Неделя'],['month','Месяц'],['all','Всё время']].map(([v,l]) => (
+          <button key={v} onClick={() => { setPeriod(v); onPeriod(v); }}
+            className="px-4 py-1.5 rounded-full text-sm"
+            style={{
+              background: period === v ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+              color: period === v ? '#d4a857' : '#f4ead5',
+              border: `1px solid ${period === v ? 'rgba(212,168,87,0.3)' : 'rgba(244,234,213,0.08)'}`,
+            }}>{l}</button>
+        ))}
+      </div>
+      {board.length === 0 ? (
+        <p className="opacity-50 text-center py-12 text-sm">Пока никто не отметил ни одной практики.</p>
+      ) : (
+        <div className="space-y-2">
+          {board.slice(0, 50).map((r) => (
+            <div key={r.user_id} className={`card rounded-xl p-3 flex items-center gap-3 ${r.user_id === me?.id ? 'card-done' : ''}`}>
+              <div className="w-10 text-center font-display text-2xl" style={{color: r.rank <= 3 ? '#d4a857' : '#f4ead5'}}>
+                {r.rank === 1 ? '🥇' : r.rank === 2 ? '🥈' : r.rank === 3 ? '🥉' : `#${r.rank}`}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-medium truncate">{r.name}</div>
+                <div className="text-xs opacity-50">{r.done} из {r.plan} дней</div>
+              </div>
+              <div className="font-display text-xl" style={{color: r.pct >= 80 ? '#d4a857' : '#f4ead5'}}>{r.pct}%</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Таб-бар ───
+function TabBar({ tab, setTab, isAdmin }) {
+  const items = [
+    { id: 'today', label: 'Сегодня', icon: Check },
+    { id: 'catalog', label: 'Каталог', icon: Plus },
+    { id: 'board', label: 'Рейтинг', icon: Trophy },
+  ];
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 z-40 backdrop-blur-md" style={{background:'rgba(13, 16, 24, 0.85)', borderTop:'1px solid rgba(244,234,213,0.08)', paddingBottom: 'env(safe-area-inset-bottom)'}}>
+      <div className="max-w-md mx-auto flex">
+        {items.map((it) => (
+          <button key={it.id} onClick={() => setTab(it.id)}
+            className={`flex-1 py-3 flex flex-col items-center gap-0.5 transition-colors ${tab === it.id ? 'tab-active' : 'opacity-50'}`}>
+            <it.icon size={20}/>
+            <span className="text-[11px]">{it.label}</span>
+          </button>
+        ))}
+        {isAdmin && (
+          <a href="/admin" className="flex-1 py-3 flex flex-col items-center gap-0.5 opacity-50">
+            <Sparkles size={20}/>
+            <span className="text-[11px]">Админ</span>
+          </a>
+        )}
+      </div>
+    </nav>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>

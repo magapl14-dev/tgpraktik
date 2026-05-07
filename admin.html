@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Админка · Практики</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { background: #0a0c14; }
+  body { margin: 0; color: #f4ead5; font-family: 'Manrope', system-ui, sans-serif; }
+  .font-display { font-family: 'Cormorant Garamond', Georgia, serif; }
+  .app-bg { background: linear-gradient(180deg, #0d1018, #0a0c14); min-height: 100vh; min-height: 100dvh; }
+  .card { background: rgba(255,250,235,0.04); border: 1px solid rgba(244,234,213,0.08); }
+  .input-field { background: rgba(255,250,235,0.04); border: 1px solid rgba(244,234,213,0.12); color: #f4ead5; transition: all 0.2s; }
+  .input-field:focus { outline: none; border-color: rgba(212,168,87,0.5); }
+  .fade-in { animation: fadeIn 0.3s ease-out; }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { scrollbar-width: none; }
+</style>
+</head>
+<body class="app-bg pb-12">
+<div id="root" style="padding: 0 16px; max-width: 900px; margin: 0 auto;">
+  <div style="text-align: center; padding: 60px 0; opacity: 0.6;" class="font-display text-xl">проверяем доступ...</div>
+</div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect } = React;
+
+const tg = window.Telegram?.WebApp;
+const initData = tg?.initData || '';
+if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor('#0a0c14'); }
+
+const api = async (path, opts = {}) => {
+  const r = await fetch(path, { ...opts, headers: {
+    'Content-Type': 'application/json', 'X-Init-Data': initData, ...(opts.headers||{}) }});
+  if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || `HTTP ${r.status}`);
+  return r.json();
+};
+
+const PALETTES = [
+  {n:'sage', bg:'#3d4a3a', a:'#a3b18a'}, {n:'amber', bg:'#4a3520', a:'#d4a857'},
+  {n:'rose', bg:'#4a2f33', a:'#c98e95'}, {n:'azure', bg:'#22384a', a:'#7fb3d3'},
+  {n:'plum', bg:'#3a2a44', a:'#b399c4'}, {n:'rust', bg:'#4a2a22', a:'#cf8770'},
+  {n:'mint', bg:'#1f4040', a:'#88c4b8'}, {n:'gold', bg:'#3d3520', a:'#e0bd6a'},
+];
+const ICONS = ['🌙','☀️','🔥','💧','🕉️','🧘','📿','🌿','✨','🪷','📖','✍️','💪','🏃','🧠','❤️','🎯','🌅','⭐','🌊','🦋','🌸','🍃','🌟'];
+
+const compress = (file, maxDim = 700, q = 0.7) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = (e) => { const img = new Image(); img.onload = () => {
+    const c = document.createElement('canvas'); let w=img.width, h=img.height;
+    if (w > h && w > maxDim) { h = h*(maxDim/w); w = maxDim; }
+    else if (h >= w && h > maxDim) { w = w*(maxDim/h); h = maxDim; }
+    c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h);
+    res(c.toDataURL('image/jpeg', q));
+  }; img.onerror = rej; img.src = e.target.result; };
+  r.onerror = rej; r.readAsDataURL(file);
+});
+
+function App() {
+  const [me, setMe] = useState(null);
+  const [tab, setTab] = useState('practices');
+  const [practices, setPractices] = useState([]);
+  const [stats, setStats] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [editing, setEditing] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err, setErr] = useState('');
+
+  const refresh = async () => {
+    const [m, p, s] = await Promise.all([api('/api/me'), api('/api/admin/practices'), api('/api/admin/stats')]);
+    setMe(m); setPractices(p); setStats(s);
+  };
+
+  useEffect(() => {
+    (async () => {
+      try { await refresh(); } catch (e) { setErr(e.message); }
+      setLoading(false);
+    })();
+  }, []);
+
+  const loadUsers = async () => {
+    try { setUsers(await api('/api/admin/users')); } catch (e) { setErr(e.message); }
+  };
+
+  if (loading) return <div className="text-center pt-20 opacity-60 font-display text-xl">загружаем...</div>;
+  if (err) return (
+    <div className="text-center pt-20">
+      <p className="opacity-60 mb-2">Доступ закрыт</p>
+      <p className="text-sm opacity-40">{err}</p>
+      <p className="text-xs opacity-30 mt-4">Только для админов. Открой через Telegram-бота.</p>
+    </div>
+  );
+
+  if (editing !== null) {
+    return <PracticeForm practice={editing} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await refresh(); }}/>;
+  }
+
+  return (
+    <div className="fade-in pt-6">
+      <header className="mb-6 flex items-start justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Админка</p>
+          <h1 className="font-display text-4xl font-light leading-tight">Управление <em style={{color:'#d4a857'}}>практиками</em></h1>
+        </div>
+        <a href="/app" className="text-sm opacity-60 hover:opacity-100 px-3 py-1.5 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>← в приложение</a>
+      </header>
+
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-6">
+          <Stat label="Пользователей" value={stats.users}/>
+          <Stat label="Практик активно" value={stats.practices}/>
+          <Stat label="Подписок активных" value={stats.joined}/>
+          <Stat label="Отметок сегодня" value={stats.active_today}/>
+        </div>
+      )}
+
+      <div className="flex gap-2 mb-4">
+        {[['practices','Практики'],['users','Пользователи']].map(([v,l]) => (
+          <button key={v} onClick={() => { setTab(v); if (v==='users' && !users.length) loadUsers(); }}
+            className="px-4 py-1.5 rounded-full text-sm"
+            style={{
+              background: tab === v ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+              color: tab === v ? '#d4a857' : '#f4ead5',
+              border: `1px solid ${tab === v ? 'rgba(212,168,87,0.3)' : 'rgba(244,234,213,0.08)'}`,
+            }}>{l}</button>
+        ))}
+      </div>
+
+      {tab === 'practices' && <PracticesList practices={practices} onEdit={setEditing} onCreate={() => setEditing({})} onChange={refresh}/>}
+      {tab === 'users' && <UsersList users={users}/>}
+    </div>
+  );
+}
+
+const Stat = ({label, value}) => (
+  <div className="card rounded-xl p-4">
+    <div className="text-xs uppercase tracking-wider opacity-50">{label}</div>
+    <div className="font-display text-3xl mt-1" style={{color:'#d4a857'}}>{value}</div>
+  </div>
+);
+
+function PracticesList({ practices, onEdit, onCreate, onChange }) {
+  const remove = async (p) => {
+    if (!confirm(`Удалить «${p.name}»? Все записи юзеров по этой практике сохранятся.`)) return;
+    await api(`/api/admin/practices/${p.id}`, { method:'DELETE' });
+    await onChange();
+  };
+  return (
+    <div>
+      <button onClick={onCreate}
+        className="w-full mb-4 py-3 rounded-full font-medium flex items-center justify-center gap-2"
+        style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+        <span style={{fontSize:'20px', lineHeight:0}}>+</span> Создать практику
+      </button>
+      {practices.length === 0 && <p className="opacity-50 text-center py-12 text-sm">Пока ни одной. Создайте первую — пользователи увидят её в каталоге.</p>}
+      <div className="space-y-2">
+        {practices.map((p) => {
+          const palette = PALETTES.find(x => x.n === p.palette) || PALETTES[1];
+          return (
+            <div key={p.id} className="card rounded-xl p-3 flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg flex items-center justify-center text-2xl flex-shrink-0 overflow-hidden"
+                   style={{background: p.photo ? 'transparent' : palette.bg, border:`1px solid ${palette.a}33`}}>
+                {p.photo ? <img src={p.photo} className="w-full h-full object-cover"/> : p.icon}
+              </div>
+              <div className="flex-1 min-w-0">
+                <div className="font-display text-lg leading-tight truncate">{p.name}</div>
+                <div className="text-xs opacity-60 flex items-center gap-2 flex-wrap">
+                  <span>{p.type === 'binary' ? 'Факт' : `Кол-во ${p.target}${p.unit ? ' '+p.unit : ''}`}</span>
+                  <span>•</span>
+                  <span>{p.max_reminders} напом. {p.reminder_from}–{p.reminder_to}</span>
+                  {!p.active && <><span>•</span><span style={{color:'#e88080'}}>выключена</span></>}
+                </div>
+              </div>
+              <button onClick={() => onEdit(p)} className="px-3 py-1.5 text-sm rounded-full"
+                style={{border:'1px solid rgba(244,234,213,0.15)'}}>Изм.</button>
+              <button onClick={() => remove(p)} className="px-3 py-1.5 text-sm rounded-full"
+                style={{border:'1px solid rgba(232,128,128,0.3)', color:'#e88080'}}>Удалить</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function UsersList({ users }) {
+  if (users.length === 0) return <p className="opacity-50 text-center py-12 text-sm">Загружаем...</p>;
+  return (
+    <div className="space-y-2">
+      {users.map((u) => (
+        <div key={u.user_id} className="card rounded-xl p-3 flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full flex items-center justify-center font-medium" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>
+            {(u.first_name || '?')[0]}
+          </div>
+          <div className="flex-1 min-w-0">
+            <div className="font-medium">{u.first_name || 'Без имени'} {u.username ? <span className="opacity-50 text-sm">@{u.username}</span> : null}</div>
+            <div className="text-xs opacity-50">был: {new Date(u.last_seen).toLocaleString('ru-RU')}</div>
+          </div>
+          <div className="text-right text-xs opacity-70">
+            <div>{u.active_practices} акт.</div>
+            <div className="opacity-50">{u.total_entries} отметок</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function PracticeForm({ practice, onClose, onSaved }) {
+  const isNew = !practice.id;
+  const [v, setV] = useState({
+    name: practice.name || '',
+    description: practice.description || '',
+    type: practice.type || 'binary',
+    target: practice.target?.toString() || '10',
+    unit: practice.unit || '',
+    icon: practice.icon || ICONS[0],
+    palette: practice.palette || 'amber',
+    media_url: practice.media_url || '',
+    media_label: practice.media_label || '',
+    photo: practice.photo || null,
+    max_reminders: practice.max_reminders ?? 3,
+    reminder_from: practice.reminder_from || '08:00',
+    reminder_to: practice.reminder_to || '21:00',
+    active: practice.active !== false,
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k, val) => setV((s) => ({...s, [k]: val}));
+
+  const save = async () => {
+    if (!v.name.trim()) return;
+    setSaving(true);
+    try {
+      const body = JSON.stringify({...v, target: v.type === 'count' ? parseInt(v.target) || 1 : null});
+      if (isNew) await api('/api/admin/practices', { method:'POST', body });
+      else await api(`/api/admin/practices/${practice.id}`, { method:'PUT', body });
+      await onSaved();
+    } catch (e) { alert(e.message); setSaving(false); }
+  };
+
+  const handlePhoto = async (file) => {
+    if (!file) return;
+    const c = await compress(file);
+    set('photo', c);
+  };
+
+  return (
+    <div className="fade-in pt-6 pb-8">
+      <header className="flex items-center justify-between mb-6">
+        <button onClick={onClose} className="opacity-60 text-sm">← Назад</button>
+        <h2 className="font-display text-2xl">{isNew ? 'Новая практика' : 'Изменить'}</h2>
+        <div className="w-12"/>
+      </header>
+
+      <div className="space-y-5">
+        <Field label="Название">
+          <input type="text" value={v.name} onChange={(e) => set('name', e.target.value)} autoFocus={isNew}
+            placeholder="Утренняя медитация" className="input-field w-full px-4 py-3 rounded-xl font-display text-xl"/>
+        </Field>
+
+        <Field label="Описание">
+          <textarea value={v.description} onChange={(e) => set('description', e.target.value)} rows={3}
+            placeholder="Зачем эта практика, инструкция..." className="input-field w-full px-4 py-3 rounded-xl resize-none"/>
+        </Field>
+
+        <Field label="Тип учёта">
+          <div className="grid grid-cols-2 gap-2">
+            <TypeBtn active={v.type==='binary'} onClick={() => set('type','binary')} title="Факт" sub="Сделано или нет"/>
+            <TypeBtn active={v.type==='count'} onClick={() => set('type','count')} title="Количество" sub="С целью на день"/>
+          </div>
+        </Field>
+
+        {v.type === 'count' && (
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Цель в день">
+              <input type="number" min="1" value={v.target} onChange={(e) => set('target', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
+            </Field>
+            <Field label="Единица">
+              <input type="text" value={v.unit} onChange={(e) => set('unit', e.target.value)} placeholder="мин, кругов, стр" className="input-field w-full px-4 py-3 rounded-xl"/>
+            </Field>
+          </div>
+        )}
+
+        <Field label="Символ">
+          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+            {ICONS.map((i) => (
+              <button key={i} onClick={() => set('icon', i)}
+                className="flex-shrink-0 w-10 h-10 rounded-lg text-xl flex items-center justify-center"
+                style={{
+                  background: v.icon === i ? 'rgba(212,168,87,0.2)' : 'rgba(244,234,213,0.04)',
+                  border: `1px solid ${v.icon === i ? 'rgba(212,168,87,0.5)' : 'rgba(244,234,213,0.08)'}`,
+                }}>{i}</button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Цвет">
+          <div className="flex gap-2 flex-wrap">
+            {PALETTES.map((p) => (
+              <button key={p.n} onClick={() => set('palette', p.n)} className="w-8 h-8 rounded-full"
+                style={{background: p.bg, border: `2px solid ${v.palette === p.n ? p.a : 'transparent'}`}}/>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Фото практики">
+          {v.photo ? (
+            <div className="relative rounded-xl overflow-hidden" style={{border:'1px solid rgba(244,234,213,0.1)'}}>
+              <img src={v.photo} className="w-full max-h-48 object-cover"/>
+              <button onClick={() => set('photo', null)} className="absolute top-2 right-2 w-7 h-7 rounded-full" style={{background:'rgba(10,12,20,0.7)'}}>×</button>
+            </div>
+          ) : (
+            <label className="block p-4 rounded-xl text-center text-sm opacity-60 cursor-pointer" style={{border:'1px dashed rgba(244,234,213,0.15)'}}>
+              Загрузить фото
+              <input type="file" accept="image/*" className="hidden" onChange={(e) => handlePhoto(e.target.files?.[0])}/>
+            </label>
+          )}
+        </Field>
+
+        <Field label="Ссылка на материал (видео, документ)">
+          <input type="url" value={v.media_url} onChange={(e) => set('media_url', e.target.value)} placeholder="https://..." className="input-field w-full px-4 py-3 rounded-xl mb-2"/>
+          {v.media_url && <input type="text" value={v.media_label} onChange={(e) => set('media_label', e.target.value)} placeholder="Название (необязат.)" className="input-field w-full px-4 py-3 rounded-xl"/>}
+        </Field>
+
+        <div className="card rounded-xl p-4">
+          <div className="text-xs uppercase tracking-wider opacity-50 mb-3">Напоминания</div>
+          <Field label={`Сколько раз в день: ${v.max_reminders}`}>
+            <input type="range" min="0" max="10" value={v.max_reminders} onChange={(e) => set('max_reminders', parseInt(e.target.value))} className="w-full"/>
+            <div className="flex justify-between text-[10px] opacity-50 mt-1">
+              <span>0 — не напоминать</span><span>10 — макс</span>
+            </div>
+          </Field>
+          <div className="grid grid-cols-2 gap-3 mt-4">
+            <Field label="С">
+              <input type="time" value={v.reminder_from} onChange={(e) => set('reminder_from', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
+            </Field>
+            <Field label="До">
+              <input type="time" value={v.reminder_to} onChange={(e) => set('reminder_to', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
+            </Field>
+          </div>
+        </div>
+
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" checked={v.active} onChange={(e) => set('active', e.target.checked)} className="w-5 h-5"/>
+          <span>Активна (показывать в каталоге)</span>
+        </label>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="flex-1 py-3.5 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>Отмена</button>
+          <button onClick={save} disabled={!v.name.trim() || saving}
+            className="flex-[2] py-3.5 rounded-full font-medium disabled:opacity-50"
+            style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+            {saving ? 'Сохраняем...' : isNew ? 'Создать' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const Field = ({ label, children }) => (
+  <div>
+    <label className="block text-xs uppercase tracking-wider opacity-50 mb-2">{label}</label>
+    {children}
+  </div>
+);
+
+const TypeBtn = ({ active, onClick, title, sub }) => (
+  <button onClick={onClick} className="p-4 rounded-xl text-left"
+    style={{
+      background: active ? 'rgba(212,168,87,0.12)' : 'rgba(244,234,213,0.04)',
+      border: `1px solid ${active ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.1)'}`,
+    }}>
+    <div className="font-display text-lg" style={{color: active ? '#d4a857' : '#f4ead5'}}>{title}</div>
+    <div className="text-xs opacity-60">{sub}</div>
+  </button>
+);
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
