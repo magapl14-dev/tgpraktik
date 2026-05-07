@@ -1,0 +1,28 @@
+# Секреты — никогда не коммитить
+.env
+.env.local
+*.key
+
+# База данных и пользовательские данные — живут только на сервере
+data.db
+data.db-journal
+data.db-wal
+data.db-shm
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
