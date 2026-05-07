@@ -86,13 +86,6 @@ const dayN = (n) => n === 1 ? 'день' : n < 5 ? 'дня' : 'дней';
 
 const isDone = (p, e) => !e ? false : p.type === 'binary' ? !!e.completed : (e.count || 0) >= (p.target || 1);
 
-const calcStreak = (p, entries) => {
-  let s = 0; const d = new Date(); let k = d.toISOString().slice(0,10);
-  if (!isDone(p, entries[`${k}_${p.id}`])) { d.setDate(d.getDate() - 1); k = d.toISOString().slice(0,10); }
-  while (isDone(p, entries[`${k}_${p.id}`])) { s++; d.setDate(d.getDate() - 1); k = d.toISOString().slice(0,10); }
-  return s;
-};
-
 // ─── Главный компонент ───
 function App() {
   const [me, setMe] = useState(null);
@@ -172,11 +165,23 @@ function TodayTab({ data, onChange }) {
     );
   }
 
+  const overall = data.overall_streak || 0;
+  const overallBest = data.overall_best || 0;
+
   return (
     <div className="fade-in pt-6">
       <header className="mb-6">
         <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Сегодня</p>
         <h1 className="font-display text-4xl font-light leading-tight">Мои <em style={{color:'#d4a857'}}>практики</em></h1>
+        {overall > 0 && (
+          <div className="flex items-center gap-1.5 mt-2 text-sm" style={{color:'#d4a857'}}>
+            <Flame size={14}/>
+            <span>{overall} {dayN(overall)} подряд</span>
+            {overallBest > overall && (
+              <span className="opacity-50 text-xs ml-1">рекорд: {overallBest}</span>
+            )}
+          </div>
+        )}
         <div className="mt-4">
           <div className="flex items-baseline justify-between mb-1.5 text-sm">
             <span className="opacity-70">Прогресс</span>
@@ -191,18 +196,20 @@ function TodayTab({ data, onChange }) {
       <div className="space-y-3">
         {data.practices.map((p) => (
           <PracticeRow key={p.id} practice={p} entry={data.entries[`${today}_${p.id}`]}
-                       streak={calcStreak(p, data.entries)} onChange={onChange}/>
+                       onChange={onChange}/>
         ))}
       </div>
     </div>
   );
 }
 
-function PracticeRow({ practice, entry, streak, onChange }) {
+function PracticeRow({ practice, entry, onChange }) {
   const [busy, setBusy] = useState(false);
   const accent = PALETTE[practice.palette] || PALETTE.amber;
   const done = isDone(practice, entry);
   const count = entry?.count || 0;
+  const streak = practice.streak || 0;
+  const bestStreak = practice.best_streak || 0;
 
   const updateBinary = async () => {
     if (busy) return; setBusy(true);
@@ -229,7 +236,15 @@ function PracticeRow({ practice, entry, streak, onChange }) {
         <div className="flex-1 min-w-0">
           <h3 className="font-display text-lg leading-tight truncate" style={{color: done ? '#d4a857' : '#f4ead5'}}>{practice.name}</h3>
           <div className="flex items-center gap-3 mt-0.5 text-xs opacity-60">
-            {streak > 0 && <span className="flex items-center gap-1"><Flame size={11}/>{streak} {dayN(streak)}</span>}
+            {streak > 0 && (
+              <span className="flex items-center gap-1">
+                <Flame size={11}/>{streak} {dayN(streak)}
+                {bestStreak > streak && <span className="opacity-60 ml-0.5">· рекорд {bestStreak}</span>}
+              </span>
+            )}
+            {streak === 0 && bestStreak > 0 && (
+              <span className="flex items-center gap-1 opacity-70"><Flame size={11}/>рекорд {bestStreak}</span>
+            )}
             {practice.type === 'count' && <span className="flex items-center gap-1"><Target size={11}/>{practice.target}{practice.unit ? ' '+practice.unit : ''}</span>}
           </div>
         </div>

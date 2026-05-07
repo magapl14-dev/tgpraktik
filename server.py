@@ -251,6 +251,29 @@ def is_done(practice_row, entry_row) -> bool:
     return (entry_row["count"] or 0) >= (practice_row["target"] or 1)
 
 
+def compute_streaks(done_dates, today: date) -> tuple[int, int]:
+    """По набору 'выполненных' дат (YYYY-MM-DD) возвращает (текущая_серия, рекорд).
+    Текущая серия не обнуляется, если сегодня ещё не закрыто — отсчёт от вчера."""
+    days = set(done_dates)
+    if not days:
+        return 0, 0
+    cursor = today if today.isoformat() in days else today - timedelta(days=1)
+    current = 0
+    while cursor.isoformat() in days:
+        current += 1
+        cursor -= timedelta(days=1)
+    sorted_days = sorted(date.fromisoformat(d) for d in days)
+    best = run = 1
+    for i in range(1, len(sorted_days)):
+        if (sorted_days[i] - sorted_days[i - 1]).days == 1:
+            run += 1
+            if run > best:
+                best = run
+        else:
+            run = 1
+    return current, best
+
+
 def practice_to_dict(row) -> dict:
     return {
         "id": row["id"],
@@ -313,9 +336,10 @@ def list_practices(x_init_data: str = Header(default="")):
 
 @app.get("/api/my")
 def my_data(x_init_data: str = Header(default="")):
-    """Полное состояние текущего юзера: его практики + записи."""
+    """Полное состояние текущего юзера: его практики + записи + стрики."""
     user = require_user(x_init_data)
     today = today_str()
+    today_d = datetime.now(TZ).date()
     with db() as c:
         ups = c.execute(
             """SELECT up.*, p.* FROM user_practices up
@@ -344,7 +368,35 @@ def my_data(x_init_data: str = Header(default="")):
                 "count": e["count"],
                 "ts": e["ts"],
             }
-    return {"practices": practices, "entries": entries}
+
+        # Полная история «выполненных» дней — для расчёта серий.
+        done_rows = c.execute(
+            """SELECT e.practice_id, e.date FROM entries e
+               JOIN practices p ON p.id = e.practice_id
+               WHERE e.user_id = ?
+                 AND ( (p.type='binary' AND e.completed=1)
+                       OR (p.type='count' AND e.count >= COALESCE(p.target,1)) )""",
+            (user["id"],),
+        ).fetchall()
+
+    by_practice: dict = {}
+    all_done_days: set = set()
+    for r in done_rows:
+        by_practice.setdefault(r["practice_id"], set()).add(r["date"])
+        all_done_days.add(r["date"])
+
+    for p in practices:
+        cur, best = compute_streaks(by_practice.get(p["id"], set()), today_d)
+        p["streak"] = cur
+        p["best_streak"] = best
+
+    overall_cur, overall_best = compute_streaks(all_done_days, today_d)
+    return {
+        "practices": practices,
+        "entries": entries,
+        "overall_streak": overall_cur,
+        "overall_best": overall_best,
+    }
 
 
 @app.post("/api/my/join")
