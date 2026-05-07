@@ -26,3 +26,9 @@ env/
 Thumbs.db
 *.swp
 *~
+
+# Локальные настройки Claude Code (разрешения на инструменты и т. п.)
+.claude/settings.local.json
+
+# Каталог с фото практик — живёт только на VPS, как и data.db
+photos/
