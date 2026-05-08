@@ -32,12 +32,15 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 from contextlib import contextmanager
 
-from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File, Form, Depends, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import Optional, Literal
+
+import bcrypt
+from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
@@ -154,11 +157,26 @@ CREATE TABLE IF NOT EXISTS app_meta (
   value  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS identities (
+  user_id        INTEGER NOT NULL,
+  provider       TEXT NOT NULL,        -- 'telegram' | 'email'
+  external_id    TEXT NOT NULL,        -- TG user_id (str) или email (lowercase)
+  password_hash  TEXT,                 -- bcrypt hash, только для provider='email'
+  email_verified INTEGER DEFAULT 0,    -- 0/1
+  created_at     TEXT NOT NULL,
+  PRIMARY KEY (provider, external_id),
+  FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
 CREATE INDEX IF NOT EXISTS idx_user_practices_user ON user_practices(user_id);
 CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
 CREATE INDEX IF NOT EXISTS idx_practice_categories_cat ON practice_categories(category_id);
+CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
 """
+
+# Диапазон user_id для веб-юзеров (без TG). TG ID < 10^12 в реальности.
+WEB_USER_ID_BASE = 10**12
 
 MAX_CATEGORY_LEVEL = 4
 
@@ -220,6 +238,28 @@ def init_db():
         _alter_safe(c, "ALTER TABLE users ADD COLUMN mute_until INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE user_practices ADD COLUMN period_end_notified INTEGER DEFAULT 0")
         _migrate_photos_to_disk(c)
+        _backfill_telegram_identities(c)
+
+
+def _backfill_telegram_identities(c):
+    """Для каждого users без identity-записи добавляет provider='telegram'.
+    Идемпотентно через INSERT OR IGNORE. Запускается при каждом старте — дешёво."""
+    rows = c.execute(
+        """SELECT u.user_id, u.created_at FROM users u
+           WHERE NOT EXISTS (
+             SELECT 1 FROM identities i
+             WHERE i.user_id = u.user_id AND i.provider = 'telegram'
+           )"""
+    ).fetchall()
+    for r in rows:
+        c.execute(
+            """INSERT OR IGNORE INTO identities
+               (user_id, provider, external_id, created_at)
+               VALUES (?, 'telegram', ?, ?)""",
+            (r["user_id"], str(r["user_id"]), r["created_at"] or datetime.now(TZ).isoformat()),
+        )
+    if rows:
+        log.info("Backfill identities: %d Telegram-юзеров получили identity-запись", len(rows))
 
 
 # ─── ДЕМО-ДАННЫЕ ───────────────────────────────────────────────────────────
@@ -344,38 +384,150 @@ def _safe_tz(name: str) -> Optional[ZoneInfo]:
         return None
 
 
-def require_user(init_data: str, tz_header: str = "") -> dict:
-    user = verify_init_data(init_data)
+# ─── СЕССИИ И SECRET_KEY ──────────────────────────────────────────────────
+SESSION_COOKIE_NAME = "session"
+SESSION_MAX_AGE_DAYS = 30
+SECRET_KEY: str = ""
+_session_serializer: Optional[URLSafeTimedSerializer] = None
+
+
+def _init_secret():
+    """Берёт SECRET_KEY из env, иначе генерит и сохраняет в app_meta.
+    Запускается ПОСЛЕ init_db()."""
+    global SECRET_KEY, _session_serializer
+    env_key = os.environ.get("SECRET_KEY", "").strip()
+    if env_key:
+        SECRET_KEY = env_key
+    else:
+        with db() as c:
+            r = c.execute("SELECT value FROM app_meta WHERE key='secret_key'").fetchone()
+            if r and r["value"]:
+                SECRET_KEY = r["value"]
+            else:
+                SECRET_KEY = secrets.token_hex(32)
+                c.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('secret_key', ?)",
+                          (SECRET_KEY,))
+    _session_serializer = URLSafeTimedSerializer(SECRET_KEY, salt="session")
+
+
+def _make_session_token(user_id: int) -> str:
+    return _session_serializer.dumps({"uid": int(user_id)})
+
+
+def _read_session_token(token: str) -> Optional[int]:
+    if not token or _session_serializer is None:
+        return None
+    try:
+        data = _session_serializer.loads(token, max_age=SESSION_MAX_AGE_DAYS * 86400)
+        return int(data.get("uid"))
+    except (BadSignature, SignatureExpired, ValueError, TypeError):
+        return None
+
+
+def _set_session_cookie(response: Response, user_id: int):
+    token = _make_session_token(user_id)
+    response.set_cookie(
+        SESSION_COOKIE_NAME, token,
+        max_age=SESSION_MAX_AGE_DAYS * 86400,
+        httponly=True, samesite="lax",
+        secure=BASE_URL.startswith("https://"),
+        path="/",
+    )
+
+
+# ─── АУТЕНТИФИКАЦИЯ ───────────────────────────────────────────────────────
+def _authenticate(init_data: str, session_token: str) -> Optional[dict]:
+    """Возвращает {id, first_name, username, _method} либо None.
+    Сначала пробует Telegram initData, потом cookie-сессию."""
+    user = verify_init_data(init_data) if init_data else None
+    if user:
+        return {
+            "id": user["id"],
+            "first_name": user.get("first_name"),
+            "username": user.get("username"),
+            "language_code": user.get("language_code"),
+            "_method": "telegram",
+        }
+    if session_token:
+        uid = _read_session_token(session_token)
+        if uid:
+            with db() as c:
+                row = c.execute(
+                    "SELECT user_id, first_name, username FROM users WHERE user_id=?",
+                    (uid,),
+                ).fetchone()
+            if row:
+                return {
+                    "id": row["user_id"],
+                    "first_name": row["first_name"],
+                    "username": row["username"],
+                    "_method": "web",
+                }
+    return None
+
+
+def require_user(init_data: str = "", session_token: str = "", tz_header: str = "") -> dict:
+    user = _authenticate(init_data, session_token)
     if not user:
-        # В dev-режиме без BOT_TOKEN допускаем заголовок X-Dev-User-Id
+        # Dev-fallback: без BOT_TOKEN разрешаем 'dev:<id>'
         if not BOT_TOKEN and init_data and init_data.startswith("dev:"):
-            return {"id": int(init_data[4:]), "first_name": "Dev", "username": "dev"}
+            return {"id": int(init_data[4:]), "first_name": "Dev", "username": "dev", "_method": "dev"}
         raise HTTPException(status_code=401, detail="Unauthorized")
-    # Touch user record. Если в заголовке валидная IANA-зона и она ещё не задана у юзера,
-    # сохраняем её (авто-определение). Юзер потом сможет переопределить вручную.
+
     now = datetime.now(TZ).isoformat()
     auto_tz = tz_header if _safe_tz(tz_header) else None
-    with db() as c:
-        c.execute(
-            """INSERT INTO users (user_id, username, first_name, language, created_at, last_seen, tz)
-               VALUES (?,?,?,?,?,?,?)
-               ON CONFLICT(user_id) DO UPDATE SET
-                 username=excluded.username,
-                 first_name=excluded.first_name,
-                 language=excluded.language,
-                 last_seen=excluded.last_seen,
-                 tz=COALESCE(users.tz, excluded.tz)""",
-            (user["id"], user.get("username"), user.get("first_name"),
-             user.get("language_code"), now, now, auto_tz),
-        )
+    if user["_method"] == "telegram":
+        with db() as c:
+            c.execute(
+                """INSERT INTO users (user_id, username, first_name, language, created_at, last_seen, tz)
+                   VALUES (?,?,?,?,?,?,?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                     username=excluded.username,
+                     first_name=excluded.first_name,
+                     language=excluded.language,
+                     last_seen=excluded.last_seen,
+                     tz=COALESCE(users.tz, excluded.tz)""",
+                (user["id"], user.get("username"), user.get("first_name"),
+                 user.get("language_code"), now, now, auto_tz),
+            )
+            c.execute(
+                """INSERT OR IGNORE INTO identities
+                   (user_id, provider, external_id, created_at)
+                   VALUES (?, 'telegram', ?, ?)""",
+                (user["id"], str(user["id"]), now),
+            )
+    elif user["_method"] == "web":
+        with db() as c:
+            if auto_tz:
+                c.execute("UPDATE users SET last_seen=?, tz=COALESCE(tz, ?) WHERE user_id=?",
+                          (now, auto_tz, user["id"]))
+            else:
+                c.execute("UPDATE users SET last_seen=? WHERE user_id=?", (now, user["id"]))
     return user
 
 
-def require_admin(init_data: str, tz_header: str = "") -> dict:
-    user = require_user(init_data, tz_header)
+def require_admin(init_data: str = "", session_token: str = "", tz_header: str = "") -> dict:
+    user = require_user(init_data, session_token, tz_header)
     if user["id"] not in ADMIN_IDS:
         raise HTTPException(status_code=403, detail="Admins only")
     return user
+
+
+# ─── DEPENDS-ХЕЛПЕРЫ ──────────────────────────────────────────────────────
+def current_user(
+    request: Request,
+    x_init_data: str = Header(default=""),
+    x_user_tz: str = Header(default=""),
+) -> dict:
+    return require_user(x_init_data, request.cookies.get(SESSION_COOKIE_NAME, ""), x_user_tz)
+
+
+def current_admin(
+    request: Request,
+    x_init_data: str = Header(default=""),
+    x_user_tz: str = Header(default=""),
+) -> dict:
+    return require_admin(x_init_data, request.cookies.get(SESSION_COOKIE_NAME, ""), x_user_tz)
 
 
 # ─── ВРЕМЯ И ЧАСОВОЙ ПОЯС ──────────────────────────────────────────────────
@@ -461,6 +613,17 @@ class CategoryIn(BaseModel):
     parent_id: Optional[str] = None
     icon: Optional[str] = ""
     sort_order: int = 0
+
+
+class RegisterIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8, max_length=128)
+    name: Optional[str] = None
+
+
+class LoginIn(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=1, max_length=128)
 
 
 class JoinIn(BaseModel):
@@ -677,8 +840,7 @@ def healthz():
 
 # ─── API: Пользователь ────────────────────────────────────────────────────
 @app.get("/api/me")
-def me(x_init_data: str = Header(default=""), x_user_tz: str = Header(default="")):
-    user = require_user(x_init_data, x_user_tz)
+def me(user: dict = Depends(current_user)):
     with db() as c:
         r = c.execute("SELECT tz, mute_until FROM users WHERE user_id=?", (user["id"],)).fetchone()
     tz_name = (r["tz"] if r and r["tz"] else DEFAULT_TZ_NAME)
@@ -690,12 +852,12 @@ def me(x_init_data: str = Header(default=""), x_user_tz: str = Header(default=""
         "tz": tz_name,
         "mute_until": mute_until,
         "muted": mute_until > int(datetime.now(TZ).timestamp()),
+        "auth_method": user.get("_method", "telegram"),
     }
 
 
 @app.get("/api/me/settings")
-def get_settings(x_init_data: str = Header(default=""), x_user_tz: str = Header(default="")):
-    user = require_user(x_init_data, x_user_tz)
+def get_settings(user: dict = Depends(current_user)):
     with db() as c:
         r = c.execute("SELECT tz, mute_until FROM users WHERE user_id=?", (user["id"],)).fetchone()
     return {
@@ -705,10 +867,7 @@ def get_settings(x_init_data: str = Header(default=""), x_user_tz: str = Header(
 
 
 @app.put("/api/me/settings")
-def update_settings(body: SettingsIn,
-                    x_init_data: str = Header(default=""),
-                    x_user_tz: str = Header(default="")):
-    user = require_user(x_init_data, x_user_tz)
+def update_settings(body: SettingsIn, user: dict = Depends(current_user)):
     sets, params = [], []
     if body.tz is not None:
         if not _safe_tz(body.tz):
@@ -728,9 +887,7 @@ def update_settings(body: SettingsIn,
 
 @app.get("/api/practices")
 def list_practices(category_id: Optional[str] = None,
-                   x_init_data: str = Header(default=""),
-                   x_user_tz: str = Header(default="")):
-    require_user(x_init_data, x_user_tz)
+                   user: dict = Depends(current_user)):
     with db() as c:
         if category_id:
             cat_ids = _category_descendants(c, category_id)
@@ -751,9 +908,8 @@ def list_practices(category_id: Optional[str] = None,
 
 
 @app.get("/api/categories")
-def list_categories(x_init_data: str = Header(default=""), x_user_tz: str = Header(default="")):
+def list_categories(user: dict = Depends(current_user)):
     """Плоский список — фронт сам строит дерево по parent_id."""
-    require_user(x_init_data, x_user_tz)
     with db() as c:
         rows = c.execute(
             "SELECT * FROM categories ORDER BY level, sort_order, name"
@@ -762,10 +918,9 @@ def list_categories(x_init_data: str = Header(default=""), x_user_tz: str = Head
 
 
 @app.get("/api/my")
-def my_data(x_init_data: str = Header(default=""), x_user_tz: str = Header(default="")):
+def my_data(user: dict = Depends(current_user)):
     """Полное состояние текущего юзера: активные практики + записи (60 дн.) +
     история подписок (для heatmap) + стрики (full/half/legacy any-done)."""
-    user = require_user(x_init_data, x_user_tz)
     with db() as c:
         tz = get_user_tz(user["id"], c)
         today_d = datetime.now(tz).date()
@@ -884,10 +1039,7 @@ def _period_end_for(period_type: str, start_d: date) -> Optional[date]:
 
 
 @app.post("/api/my/join")
-def join_practice(body: JoinIn,
-                  x_init_data: str = Header(default=""),
-                  x_user_tz: str = Header(default="")):
-    user = require_user(x_init_data, x_user_tz)
+def join_practice(body: JoinIn, user: dict = Depends(current_user)):
     with db() as c:
         today = user_today_d(user["id"], c)
         end = _period_end_for(body.period_type, today)
@@ -910,12 +1062,9 @@ def join_practice(body: JoinIn,
 
 
 @app.post("/api/my/extend")
-def extend_practice(body: ExtendIn,
-                    x_init_data: str = Header(default=""),
-                    x_user_tz: str = Header(default="")):
+def extend_practice(body: ExtendIn, user: dict = Depends(current_user)):
     """Продлить подписку на практику. По умолчанию — тем же сроком, что был.
     Новая дата конца = max(текущая_period_end, сегодня) + срок."""
-    user = require_user(x_init_data, x_user_tz)
     with db() as c:
         sub = c.execute(
             "SELECT period_type, period_end FROM user_practices WHERE user_id=? AND practice_id=?",
@@ -945,20 +1094,14 @@ def extend_practice(body: ExtendIn,
 
 
 @app.delete("/api/my/leave/{practice_id}")
-def leave_practice(practice_id: str,
-                   x_init_data: str = Header(default=""),
-                   x_user_tz: str = Header(default="")):
-    user = require_user(x_init_data, x_user_tz)
+def leave_practice(practice_id: str, user: dict = Depends(current_user)):
     with db() as c:
         c.execute("DELETE FROM user_practices WHERE user_id=? AND practice_id=?", (user["id"], practice_id))
     return {"ok": True}
 
 
 @app.post("/api/my/entry")
-def upsert_entry(body: EntryIn,
-                 x_init_data: str = Header(default=""),
-                 x_user_tz: str = Header(default="")):
-    user = require_user(x_init_data, x_user_tz)
+def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
     ts = int(datetime.now(TZ).timestamp())
     with db() as c:
         target_date = body.date or user_today_str(user["id"], c)
@@ -987,9 +1130,8 @@ def upsert_entry(body: EntryIn,
 
 @app.get("/api/leaderboard")
 def leaderboard(period: Literal["week", "month", "all"] = "month",
-                x_init_data: str = Header(default="")):
+                user: dict = Depends(current_user)):
     """Рейтинг по проценту выполнения за период."""
-    require_user(x_init_data)
     today = datetime.now(TZ).date()
     if period == "week":
         start = today - timedelta(days=7)
@@ -1038,10 +1180,77 @@ def leaderboard(period: Literal["week", "month", "all"] = "month",
     return items
 
 
+# ─── API: Авторизация (email/пароль для веб-юзеров) ───────────────────────
+@app.post("/api/auth/register")
+def auth_register(body: RegisterIn, response: Response,
+                  x_user_tz: str = Header(default="")):
+    email = body.email.lower().strip()
+    name = (body.name or email.split("@")[0]).strip()[:64]
+    pwd_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    now = datetime.now(TZ).isoformat()
+    auto_tz = x_user_tz if _safe_tz(x_user_tz) else None
+    with db() as c:
+        existing = c.execute(
+            "SELECT user_id FROM identities WHERE provider='email' AND external_id=?",
+            (email,),
+        ).fetchone()
+        if existing:
+            raise HTTPException(409, "Юзер с таким email уже зарегистрирован")
+        # Берём свободный user_id из веб-диапазона (TG ID < WEB_USER_ID_BASE).
+        row = c.execute(
+            "SELECT COALESCE(MAX(user_id), ?) AS m FROM users WHERE user_id >= ?",
+            (WEB_USER_ID_BASE - 1, WEB_USER_ID_BASE),
+        ).fetchone()
+        new_uid = (row["m"] or (WEB_USER_ID_BASE - 1)) + 1
+        c.execute(
+            """INSERT INTO users (user_id, username, first_name, language, created_at, last_seen, tz)
+               VALUES (?, NULL, ?, NULL, ?, ?, ?)""",
+            (new_uid, name, now, now, auto_tz),
+        )
+        c.execute(
+            """INSERT INTO identities (user_id, provider, external_id, password_hash, email_verified, created_at)
+               VALUES (?, 'email', ?, ?, 0, ?)""",
+            (new_uid, email, pwd_hash, now),
+        )
+    _set_session_cookie(response, new_uid)
+    return {"ok": True, "user_id": new_uid, "email": email, "name": name}
+
+
+@app.post("/api/auth/login")
+def auth_login(body: LoginIn, response: Response):
+    email = body.email.lower().strip()
+    with db() as c:
+        row = c.execute(
+            """SELECT user_id, password_hash FROM identities
+               WHERE provider='email' AND external_id=?""",
+            (email,),
+        ).fetchone()
+    if not row or not row["password_hash"]:
+        raise HTTPException(401, "Неверный email или пароль")
+    try:
+        ok = bcrypt.checkpw(body.password.encode("utf-8"), row["password_hash"].encode("utf-8"))
+    except ValueError:
+        ok = False
+    if not ok:
+        raise HTTPException(401, "Неверный email или пароль")
+    _set_session_cookie(response, row["user_id"])
+    return {"ok": True, "user_id": row["user_id"]}
+
+
+@app.post("/api/auth/logout")
+def auth_logout(response: Response):
+    response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+    return {"ok": True}
+
+
+@app.get("/login")
+def login_page():
+    return FileResponse("frontend/login.html")
+
+
 # ─── API: Админка ──────────────────────────────────────────────────────────
 @app.get("/api/admin/practices")
-def admin_list(x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_list(user: dict = Depends(current_admin)):
     with db() as c:
         rows = c.execute("SELECT * FROM practices ORDER BY created_at DESC").fetchall()
         cat_map = _load_practice_categories(c, [r["id"] for r in rows])
@@ -1049,8 +1258,7 @@ def admin_list(x_init_data: str = Header(default="")):
 
 
 @app.get("/api/admin/categories")
-def admin_list_categories(x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_list_categories(user: dict = Depends(current_admin)):
     with db() as c:
         rows = c.execute(
             """SELECT cat.*,
@@ -1062,8 +1270,7 @@ def admin_list_categories(x_init_data: str = Header(default="")):
 
 
 @app.post("/api/admin/categories")
-def admin_create_category(body: CategoryIn, x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_create_category(body: CategoryIn, user: dict = Depends(current_admin)):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(400, "Имя категории не может быть пустым")
@@ -1088,9 +1295,8 @@ def admin_create_category(body: CategoryIn, x_init_data: str = Header(default=""
 
 
 @app.put("/api/admin/categories/{cid}")
-def admin_update_category(cid: str, body: CategoryIn, x_init_data: str = Header(default="")):
+def admin_update_category(cid: str, body: CategoryIn, user: dict = Depends(current_admin)):
     """Можно менять name, icon, sort_order. parent_id фиксирован после создания."""
-    require_admin(x_init_data)
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(400, "Имя категории не может быть пустым")
@@ -1104,18 +1310,16 @@ def admin_update_category(cid: str, body: CategoryIn, x_init_data: str = Header(
 
 
 @app.delete("/api/admin/categories/{cid}")
-def admin_delete_category(cid: str, x_init_data: str = Header(default="")):
+def admin_delete_category(cid: str, user: dict = Depends(current_admin)):
     """Каскадно удаляет потомков и связи с практиками (FK ON DELETE CASCADE)."""
-    require_admin(x_init_data)
     with db() as c:
         c.execute("DELETE FROM categories WHERE id=?", (cid,))
     return {"ok": True}
 
 
 @app.post("/api/admin/seed_demo")
-def admin_seed_demo(x_init_data: str = Header(default="")):
+def admin_seed_demo(user: dict = Depends(current_admin)):
     """Принудительная заливка демо. Идемпотентно (INSERT OR IGNORE), флаг игнорируется."""
-    require_admin(x_init_data)
     with db() as c:
         created = _seed_demo(c)
         c.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seeded_demo_v1', ?)",
@@ -1124,8 +1328,7 @@ def admin_seed_demo(x_init_data: str = Header(default="")):
 
 
 @app.get("/api/admin/stats")
-def admin_stats(x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_stats(user: dict = Depends(current_admin)):
     with db() as c:
         users = c.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
         practices = c.execute("SELECT COUNT(*) AS n FROM practices WHERE active=1").fetchone()["n"]
@@ -1140,8 +1343,7 @@ def admin_stats(x_init_data: str = Header(default="")):
 
 
 @app.post("/api/admin/practices")
-def admin_create(body: PracticeIn, x_init_data: str = Header(default="")):
-    user = require_admin(x_init_data)
+def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
     pid = "p_" + secrets.token_hex(6)
     photo_value = save_photo_from_input(body.photo, pid)
     with db() as c:
@@ -1160,8 +1362,7 @@ def admin_create(body: PracticeIn, x_init_data: str = Header(default="")):
 
 
 @app.put("/api/admin/practices/{pid}")
-def admin_update(pid: str, body: PracticeIn, x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)):
     photo_value = save_photo_from_input(body.photo, pid)
     with db() as c:
         existing = c.execute("SELECT id FROM practices WHERE id=?", (pid,)).fetchone()
@@ -1181,16 +1382,14 @@ def admin_update(pid: str, body: PracticeIn, x_init_data: str = Header(default="
 
 
 @app.delete("/api/admin/practices/{pid}")
-def admin_delete(pid: str, x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_delete(pid: str, user: dict = Depends(current_admin)):
     with db() as c:
         c.execute("DELETE FROM practices WHERE id=?", (pid,))
     return {"ok": True}
 
 
 @app.get("/api/admin/users")
-def admin_users(x_init_data: str = Header(default="")):
-    require_admin(x_init_data)
+def admin_users(user: dict = Depends(current_admin)):
     with db() as c:
         rows = c.execute("""
             SELECT u.user_id, u.username, u.first_name, u.created_at, u.last_seen,
@@ -1522,6 +1721,7 @@ scheduler: Optional[AsyncIOScheduler] = None
 @app.on_event("startup")
 async def on_startup():
     init_db()
+    _init_secret()
     seed_demo_once()
     Path("frontend").mkdir(exist_ok=True)
     log.info("DB ready at %s", DB_PATH.absolute())

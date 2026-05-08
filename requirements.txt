@@ -3,3 +3,6 @@ uvicorn[standard]==0.30.6
 aiogram==3.13.1
 apscheduler==3.10.4
 pydantic==2.9.2
+pydantic[email]==2.9.2
+bcrypt==4.2.0
+itsdangerous==2.2.0

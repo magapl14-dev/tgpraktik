@@ -59,6 +59,7 @@ if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor('#0a0c
 const api = async (path, opts = {}) => {
   const r = await fetch(path, {
     ...opts,
+    credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
       'X-Init-Data': initData,
@@ -66,6 +67,11 @@ const api = async (path, opts = {}) => {
       ...(opts.headers || {}),
     },
   });
+  // Не залогинен и не из Telegram — отправляем на /login
+  if (r.status === 401 && !initData) {
+    window.location.replace('/login');
+    return new Promise(() => {});  // зависнем, чтобы вызывающий код не упал
+  }
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || `HTTP ${r.status}`);
   return r.json();
 };
@@ -153,7 +159,13 @@ function App() {
       <div className="text-center pt-20 px-6">
         <p className="opacity-60 mb-2">Не получилось войти</p>
         <p className="text-sm opacity-40">{err}</p>
-        <p className="text-xs opacity-30 mt-4">Открой это приложение из Telegram-бота, не напрямую в браузере.</p>
+        {initData ? (
+          <p className="text-xs opacity-30 mt-4">Сессия в Telegram могла протухнуть — закрой и открой бота заново.</p>
+        ) : (
+          <p className="text-xs opacity-30 mt-4">
+            <a href="/login" style={{color:'#d4a857'}}>Войти через email</a> или открой бота в Telegram.
+          </p>
+        )}
       </div>
     );
   }
@@ -911,8 +923,19 @@ function SettingsSheet({ me, onClose, onChanged }) {
           {busy ? 'Сохраняем...' : 'Сохранить'}
         </button>
 
+        {me?.auth_method === 'web' && (
+          <button onClick={async () => {
+                    try { await api('/api/auth/logout', { method:'POST' }); }
+                    finally { window.location.replace('/login'); }
+                  }}
+                  className="w-full py-3 rounded-full text-sm flex items-center justify-center gap-2 mb-2"
+                  style={{border:'1px solid rgba(232,128,128,0.3)', color:'#e88080'}}>
+            <Logout size={14}/> Выйти из аккаунта
+          </button>
+        )}
+
         <p className="text-[11px] opacity-40 text-center">
-          Чтобы выйти из всех практик — отправь боту команду /leave_all
+          Чтобы выйти из всех практик — {me?.auth_method === 'telegram' ? 'отправь боту команду /leave_all' : 'отпишись от каждой через её карточку'}
         </p>
       </div>
     </div>
