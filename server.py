@@ -149,6 +149,11 @@ CREATE TABLE IF NOT EXISTS practice_categories (
   FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS app_meta (
+  key    TEXT PRIMARY KEY,
+  value  TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
 CREATE INDEX IF NOT EXISTS idx_user_practices_user ON user_practices(user_id);
 CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
@@ -215,6 +220,88 @@ def init_db():
         _alter_safe(c, "ALTER TABLE users ADD COLUMN mute_until INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE user_practices ADD COLUMN period_end_notified INTEGER DEFAULT 0")
         _migrate_photos_to_disk(c)
+
+
+# ─── ДЕМО-ДАННЫЕ ───────────────────────────────────────────────────────────
+DEMO_CATEGORIES = [
+    # (id, name, parent_id, level, icon, sort_order)
+    ("cat_demo_health",      "Здоровье",           None,                1, "🪷", 1),
+    ("cat_demo_inner",       "Внутренняя работа",  None,                1, "🧘", 2),
+    ("cat_demo_male",        "Мужские практики",   None,                1, "⚔️", 3),
+    ("cat_demo_body",        "Телесные",           "cat_demo_health",   2, "💪", 1),
+    ("cat_demo_food",        "Питание",            "cat_demo_health",   2, "🍃", 2),
+    ("cat_demo_active",      "Активные",           "cat_demo_body",     3, "🏃", 1),
+    ("cat_demo_meditation",  "Медитация",          "cat_demo_inner",    2, "📿", 1),
+]
+
+# (id, name, desc, type, target, unit, icon, palette, max_rem, from, to, [cat_ids])
+DEMO_PRACTICES = [
+    ("p_demo_meditation", "Утренняя медитация",
+     "Сесть на 15 минут после пробуждения. Дыхание, без приложений и музыки.",
+     "binary", None, "", "🧘", "mint", 2, "07:00", "11:00",
+     ["cat_demo_meditation"]),
+    ("p_demo_run", "Бег",
+     "3 км в спокойном темпе. Можно с интервалами или пульсовой работой.",
+     "count", 3, "км", "🏃", "rust", 2, "06:30", "20:00",
+     ["cat_demo_active"]),
+    ("p_demo_cold", "Холодный душ",
+     "Минимум 60 секунд под холодной водой. Постепенно увеличивай время.",
+     "binary", None, "", "💧", "azure", 2, "06:00", "10:00",
+     ["cat_demo_body", "cat_demo_male"]),
+    ("p_demo_read", "Чтение",
+     "30 минут художественной книги или нон-фикшн. Не лента в телефоне.",
+     "count", 30, "мин", "📖", "gold", 2, "18:00", "23:00",
+     ["cat_demo_inner"]),
+    ("p_demo_nosugar", "Без сахара",
+     "Никаких сладостей и десертов сегодня. Фрукты можно.",
+     "binary", None, "", "🌿", "sage", 1, "10:00", "21:00",
+     ["cat_demo_food", "cat_demo_male"]),
+]
+
+
+def _seed_demo(c) -> int:
+    """Идемпотентно заливает демо-категории и практики через INSERT OR IGNORE.
+    Возвращает число созданных практик (для лога). Не трогает уже существующие записи."""
+    now = datetime.now(TZ).isoformat()
+    for cid, name, parent, level, icon, sort_order in DEMO_CATEGORIES:
+        c.execute(
+            """INSERT OR IGNORE INTO categories
+               (id, name, parent_id, level, icon, sort_order, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (cid, name, parent, level, icon, sort_order, now),
+        )
+    created = 0
+    for pid, name, desc, typ, target, unit, icon, palette, max_rem, t_from, t_to, cat_ids in DEMO_PRACTICES:
+        cur = c.execute(
+            """INSERT OR IGNORE INTO practices
+               (id, name, description, type, target, unit, icon, palette,
+                media_url, media_label, photo,
+                max_reminders, reminder_from, reminder_to, active, created_at, created_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', '', NULL, ?, ?, ?, 1, ?, NULL)""",
+            (pid, name, desc, typ, target, unit, icon, palette,
+             max_rem, t_from, t_to, now),
+        )
+        if cur.rowcount > 0:
+            created += 1
+        for cat_id in cat_ids:
+            c.execute(
+                "INSERT OR IGNORE INTO practice_categories (practice_id, category_id) VALUES (?, ?)",
+                (pid, cat_id),
+            )
+    return created
+
+
+def seed_demo_once():
+    """Вызывается при старте. Заливает демо ровно один раз — флаг в app_meta защищает
+    от воскрешения удалённых админом практик при следующих рестартах."""
+    with db() as c:
+        existing = c.execute("SELECT 1 FROM app_meta WHERE key='seeded_demo_v1'").fetchone()
+        if existing:
+            return
+        created = _seed_demo(c)
+        c.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seeded_demo_v1', ?)",
+                  (datetime.now(TZ).isoformat(),))
+        log.info("Демо-данные: создано %d практик и до %d категорий", created, len(DEMO_CATEGORIES))
 
 
 # ─── ВАЛИДАЦИЯ TELEGRAM initData ───────────────────────────────────────────
@@ -1025,6 +1112,17 @@ def admin_delete_category(cid: str, x_init_data: str = Header(default="")):
     return {"ok": True}
 
 
+@app.post("/api/admin/seed_demo")
+def admin_seed_demo(x_init_data: str = Header(default="")):
+    """Принудительная заливка демо. Идемпотентно (INSERT OR IGNORE), флаг игнорируется."""
+    require_admin(x_init_data)
+    with db() as c:
+        created = _seed_demo(c)
+        c.execute("INSERT OR REPLACE INTO app_meta (key, value) VALUES ('seeded_demo_v1', ?)",
+                  (datetime.now(TZ).isoformat(),))
+    return {"ok": True, "created_practices": created, "categories": len(DEMO_CATEGORIES)}
+
+
 @app.get("/api/admin/stats")
 def admin_stats(x_init_data: str = Header(default="")):
     require_admin(x_init_data)
@@ -1424,6 +1522,7 @@ scheduler: Optional[AsyncIOScheduler] = None
 @app.on_event("startup")
 async def on_startup():
     init_db()
+    seed_demo_once()
     Path("frontend").mkdir(exist_ok=True)
     log.info("DB ready at %s", DB_PATH.absolute())
     log.info("Photos at %s", PHOTOS_DIR.absolute())
