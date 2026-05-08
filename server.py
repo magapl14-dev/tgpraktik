@@ -130,9 +130,32 @@ CREATE TABLE IF NOT EXISTS reminders_sent (
   PRIMARY KEY (user_id, practice_id, date)
 );
 
+CREATE TABLE IF NOT EXISTS categories (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  parent_id   TEXT,
+  level       INTEGER NOT NULL,         -- 1..4, считается сервером
+  icon        TEXT,
+  sort_order  INTEGER DEFAULT 0,
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY (parent_id) REFERENCES categories(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS practice_categories (
+  practice_id  TEXT NOT NULL,
+  category_id  TEXT NOT NULL,
+  PRIMARY KEY (practice_id, category_id),
+  FOREIGN KEY (practice_id) REFERENCES practices(id) ON DELETE CASCADE,
+  FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
 CREATE INDEX IF NOT EXISTS idx_user_practices_user ON user_practices(user_id);
+CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
+CREATE INDEX IF NOT EXISTS idx_practice_categories_cat ON practice_categories(category_id);
 """
+
+MAX_CATEGORY_LEVEL = 4
 
 
 @contextmanager
@@ -343,6 +366,14 @@ class PracticeIn(BaseModel):
     reminder_from: str = "08:00"
     reminder_to: str = "21:00"
     active: bool = True
+    category_ids: list[str] = Field(default_factory=list)
+
+
+class CategoryIn(BaseModel):
+    name: str
+    parent_id: Optional[str] = None
+    icon: Optional[str] = ""
+    sort_order: int = 0
 
 
 class JoinIn(BaseModel):
@@ -463,7 +494,7 @@ def compute_full_day_streaks(subs, done_set, today_d: date) -> dict:
             "half_current": h_cur, "half_best": h_best}
 
 
-def practice_to_dict(row) -> dict:
+def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
@@ -480,7 +511,56 @@ def practice_to_dict(row) -> dict:
         "reminder_from": row["reminder_from"],
         "reminder_to": row["reminder_to"],
         "active": bool(row["active"]),
+        "category_ids": category_ids or [],
     }
+
+
+# ─── КАТЕГОРИИ ─────────────────────────────────────────────────────────────
+def _load_practice_categories(c, practice_ids) -> dict:
+    """{practice_id: [category_id, ...]} одним запросом."""
+    ids = list(practice_ids)
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    rows = c.execute(
+        f"SELECT practice_id, category_id FROM practice_categories WHERE practice_id IN ({placeholders})",
+        ids,
+    ).fetchall()
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r["practice_id"], []).append(r["category_id"])
+    return out
+
+
+def _category_descendants(c, root_id: str) -> list:
+    """Все потомки + сам корень. Используется для фильтрации практик по категории."""
+    rows = c.execute(
+        """WITH RECURSIVE descendants(id) AS (
+              SELECT id FROM categories WHERE id = ?
+              UNION ALL
+              SELECT c.id FROM categories c JOIN descendants d ON c.parent_id = d.id
+           )
+           SELECT id FROM descendants""",
+        (root_id,),
+    ).fetchall()
+    return [r["id"] for r in rows]
+
+
+def _save_practice_categories(c, practice_id: str, category_ids):
+    """Перезаписывает связи практика→категории. Игнорирует несуществующие category_id."""
+    c.execute("DELETE FROM practice_categories WHERE practice_id=?", (practice_id,))
+    ids = [cid for cid in (category_ids or []) if cid]
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    valid = [r["id"] for r in c.execute(
+        f"SELECT id FROM categories WHERE id IN ({placeholders})", ids
+    ).fetchall()]
+    for cid in valid:
+        c.execute(
+            "INSERT OR IGNORE INTO practice_categories (practice_id, category_id) VALUES (?, ?)",
+            (practice_id, cid),
+        )
 
 
 # ─── FASTAPI ───────────────────────────────────────────────────────────────
@@ -560,11 +640,38 @@ def update_settings(body: SettingsIn,
 
 
 @app.get("/api/practices")
-def list_practices(x_init_data: str = Header(default=""), x_user_tz: str = Header(default="")):
+def list_practices(category_id: Optional[str] = None,
+                   x_init_data: str = Header(default=""),
+                   x_user_tz: str = Header(default="")):
     require_user(x_init_data, x_user_tz)
     with db() as c:
-        rows = c.execute("SELECT * FROM practices WHERE active=1 ORDER BY created_at DESC").fetchall()
-    return [practice_to_dict(r) for r in rows]
+        if category_id:
+            cat_ids = _category_descendants(c, category_id)
+            if not cat_ids:
+                return []
+            placeholders = ",".join("?" * len(cat_ids))
+            rows = c.execute(
+                f"""SELECT DISTINCT p.* FROM practices p
+                    JOIN practice_categories pc ON pc.practice_id = p.id
+                    WHERE p.active = 1 AND pc.category_id IN ({placeholders})
+                    ORDER BY p.created_at DESC""",
+                cat_ids,
+            ).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM practices WHERE active=1 ORDER BY created_at DESC").fetchall()
+        cat_map = _load_practice_categories(c, [r["id"] for r in rows])
+    return [practice_to_dict(r, cat_map.get(r["id"], [])) for r in rows]
+
+
+@app.get("/api/categories")
+def list_categories(x_init_data: str = Header(default=""), x_user_tz: str = Header(default="")):
+    """Плоский список — фронт сам строит дерево по parent_id."""
+    require_user(x_init_data, x_user_tz)
+    with db() as c:
+        rows = c.execute(
+            "SELECT * FROM categories ORDER BY level, sort_order, name"
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 @app.get("/api/my")
@@ -584,9 +691,10 @@ def my_data(x_init_data: str = Header(default=""), x_user_tz: str = Header(defau
                  AND (up.period_end IS NULL OR up.period_end >= ?)""",
             (user["id"], today),
         ).fetchall()
+        active_cat_map = _load_practice_categories(c, [r["id"] for r in ups])
         practices = []
         for r in ups:
-            d = practice_to_dict(r)
+            d = practice_to_dict(r, active_cat_map.get(r["id"], []))
             d["period_type"] = r["period_type"]
             d["period_start"] = r["period_start"]
             d["period_end"] = r["period_end"]
@@ -615,6 +723,7 @@ def my_data(x_init_data: str = Header(default=""), x_user_tz: str = Header(defau
                WHERE up.user_id = ?""",
             (user["id"],),
         ).fetchall()
+        history_cat_map = _load_practice_categories(c, [r["practice_id"] for r in subs_rows])
         history_practices = [{
             "id": r["practice_id"],
             "name": r["name"],
@@ -630,6 +739,7 @@ def my_data(x_init_data: str = Header(default=""), x_user_tz: str = Header(defau
             "period_type": r["period_type"],
             "period_start": r["period_start"],
             "period_end": r["period_end"],
+            "category_ids": history_cat_map.get(r["practice_id"], []),
         } for r in subs_rows]
 
         # Полная история «выполненных» дней — для расчёта серий.
@@ -847,7 +957,72 @@ def admin_list(x_init_data: str = Header(default="")):
     require_admin(x_init_data)
     with db() as c:
         rows = c.execute("SELECT * FROM practices ORDER BY created_at DESC").fetchall()
-    return [practice_to_dict(r) for r in rows]
+        cat_map = _load_practice_categories(c, [r["id"] for r in rows])
+    return [practice_to_dict(r, cat_map.get(r["id"], [])) for r in rows]
+
+
+@app.get("/api/admin/categories")
+def admin_list_categories(x_init_data: str = Header(default="")):
+    require_admin(x_init_data)
+    with db() as c:
+        rows = c.execute(
+            """SELECT cat.*,
+                  (SELECT COUNT(*) FROM practice_categories pc WHERE pc.category_id = cat.id) AS practice_count
+               FROM categories cat
+               ORDER BY level, sort_order, name"""
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/admin/categories")
+def admin_create_category(body: CategoryIn, x_init_data: str = Header(default="")):
+    require_admin(x_init_data)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Имя категории не может быть пустым")
+    with db() as c:
+        if body.parent_id:
+            parent = c.execute("SELECT level FROM categories WHERE id=?", (body.parent_id,)).fetchone()
+            if not parent:
+                raise HTTPException(404, "Родительская категория не найдена")
+            level = parent["level"] + 1
+            if level > MAX_CATEGORY_LEVEL:
+                raise HTTPException(400, f"Превышена максимальная глубина {MAX_CATEGORY_LEVEL}")
+        else:
+            level = 1
+        cid = "c_" + secrets.token_hex(6)
+        c.execute(
+            """INSERT INTO categories (id, name, parent_id, level, icon, sort_order, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (cid, name, body.parent_id, level, body.icon or "", body.sort_order,
+             datetime.now(TZ).isoformat()),
+        )
+    return {"id": cid, "level": level}
+
+
+@app.put("/api/admin/categories/{cid}")
+def admin_update_category(cid: str, body: CategoryIn, x_init_data: str = Header(default="")):
+    """Можно менять name, icon, sort_order. parent_id фиксирован после создания."""
+    require_admin(x_init_data)
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(400, "Имя категории не может быть пустым")
+    with db() as c:
+        existing = c.execute("SELECT id FROM categories WHERE id=?", (cid,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "Not found")
+        c.execute("UPDATE categories SET name=?, icon=?, sort_order=? WHERE id=?",
+                  (name, body.icon or "", body.sort_order, cid))
+    return {"ok": True}
+
+
+@app.delete("/api/admin/categories/{cid}")
+def admin_delete_category(cid: str, x_init_data: str = Header(default="")):
+    """Каскадно удаляет потомков и связи с практиками (FK ON DELETE CASCADE)."""
+    require_admin(x_init_data)
+    with db() as c:
+        c.execute("DELETE FROM categories WHERE id=?", (cid,))
+    return {"ok": True}
 
 
 @app.get("/api/admin/stats")
@@ -882,6 +1057,7 @@ def admin_create(body: PracticeIn, x_init_data: str = Header(default="")):
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), datetime.now(TZ).isoformat(), user["id"]),
         )
+        _save_practice_categories(c, pid, body.category_ids)
     return {"id": pid}
 
 
@@ -902,6 +1078,7 @@ def admin_update(pid: str, body: PracticeIn, x_init_data: str = Header(default="
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), pid),
         )
+        _save_practice_categories(c, pid, body.category_ids)
     return {"ok": True}
 
 

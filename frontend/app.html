@@ -48,7 +48,7 @@
 </div>
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 const tg = window.Telegram?.WebApp;
 const initData = tg?.initData || '';
@@ -113,6 +113,7 @@ function App() {
   const [me, setMe] = useState(null);
   const [data, setData] = useState({ practices: [], history_practices: [], entries: {} });
   const [catalog, setCatalog] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [board, setBoard] = useState([]);
   const [tab, setTab] = useState('today');
   const [loading, setLoading] = useState(true);
@@ -125,10 +126,10 @@ function App() {
 
   const refresh = async () => {
     try {
-      const [m, my, cat] = await Promise.all([
-        api('/api/me'), api('/api/my'), api('/api/practices')
+      const [m, my, cat, cats] = await Promise.all([
+        api('/api/me'), api('/api/my'), api('/api/practices'), api('/api/categories')
       ]);
-      setMe(m); setData(my); setCatalog(cat);
+      setMe(m); setData(my); setCatalog(cat); setCategories(cats);
     } catch (e) { setErr(e.message); }
   };
 
@@ -163,7 +164,7 @@ function App() {
                                     onPracticeTap={setPracticeDetail}
                                     onSettings={() => setSettingsOpen(true)}
                                     muted={me?.muted}/>}
-      {tab === 'catalog' && <CatalogTab catalog={catalog} joined={data.practices} onJoin={setJoining}/>}
+      {tab === 'catalog' && <CatalogTab catalog={catalog} categories={categories} joined={data.practices} onJoin={setJoining}/>}
       {tab === 'history' && <HistoryTab data={data} onPracticeTap={setPracticeDetail}/>}
       {tab === 'board' && <BoardTab board={board} me={me} onPeriod={async(p) => {
         try { setBoard(await api(`/api/leaderboard?period=${p}`)); } catch (e) { setErr(e.message); }
@@ -380,44 +381,136 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
   );
 }
 
-// ─── Каталог ───
-function CatalogTab({ catalog, joined, onJoin }) {
+// ─── Каталог (иерархический) ───
+// Алгоритм: текущий узел currentCategoryId; собираем descendants → фильтруем catalog.
+// Подкатегории текущего узла показываем сверху как чипсы.
+const buildCatTree = (cats) => {
+  const byParent = {};
+  cats.forEach(c => {
+    const k = c.parent_id || 'ROOT';
+    (byParent[k] = byParent[k] || []).push(c);
+  });
+  Object.values(byParent).forEach(arr => arr.sort((a,b) =>
+    (a.sort_order - b.sort_order) || a.name.localeCompare(b.name, 'ru')));
+  return byParent;
+};
+
+const collectDescendants = (byParent, rootId) => {
+  const ids = new Set();
+  const walk = (k) => (byParent[k] || []).forEach(c => { ids.add(c.id); walk(c.id); });
+  if (rootId) { ids.add(rootId); walk(rootId); }
+  return ids;
+};
+
+const buildPath = (cats, id) => {
+  const byId = Object.fromEntries(cats.map(c => [c.id, c]));
+  const out = [];
+  let cur = id ? byId[id] : null;
+  while (cur) { out.unshift(cur); cur = cur.parent_id ? byId[cur.parent_id] : null; }
+  return out;
+};
+
+function CatalogTab({ catalog, categories, joined, onJoin }) {
+  const [currentCatId, setCurrentCatId] = useState(null);
   const joinedIds = new Set(joined.map((p) => p.id));
+  const byParent = useMemo(() => buildCatTree(categories), [categories]);
+  const childCats = byParent[currentCatId || 'ROOT'] || [];
+  const path = buildPath(categories, currentCatId);
+
+  // Фильтр практик по текущей категории (включая потомков)
+  const visiblePractices = useMemo(() => {
+    if (!currentCatId) return catalog;
+    const allowedIds = collectDescendants(byParent, currentCatId);
+    return catalog.filter(p => (p.category_ids || []).some(id => allowedIds.has(id)));
+  }, [catalog, currentCatId, byParent]);
+
   return (
     <div className="fade-in pt-6">
-      <header className="mb-6">
+      <header className="mb-4">
         <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Каталог</p>
-        <h1 className="font-display text-4xl font-light leading-tight">Выбери <em style={{color:'#d4a857'}}>практику</em></h1>
-        <p className="opacity-60 text-sm mt-2">Присоединись к практикам и установи период. Нажми на карточку, чтобы выбрать.</p>
+        <h1 className="font-display text-4xl font-light leading-tight">
+          {currentCatId ? <span><em style={{color:'#d4a857'}}>{path[path.length-1]?.name}</em></span>
+                        : <>Выбери <em style={{color:'#d4a857'}}>практику</em></>}
+        </h1>
+        {!currentCatId && (
+          <p className="opacity-60 text-sm mt-2">Тапни категорию чтобы сузить выбор, или прокрути все практики ниже.</p>
+        )}
       </header>
-      {catalog.length === 0 && <p className="opacity-50 text-center py-12">Пока нет ни одной практики. Админ ещё их добавляет.</p>}
-      <div className="space-y-3">
-        {catalog.map((p) => {
-          const accent = PALETTE[p.palette] || PALETTE.amber;
-          const isJoined = joinedIds.has(p.id);
-          return (
-            <button key={p.id} onClick={() => !isJoined && onJoin(p)} disabled={isJoined}
-              className={`card rounded-2xl p-4 w-full text-left transition-all ${!isJoined ? 'active:scale-[0.99]' : 'opacity-60'}`}>
-              <div className="flex items-center gap-3">
-                <div className="w-14 h-14 rounded-xl flex items-center justify-center text-3xl overflow-hidden flex-shrink-0"
-                     style={{background: p.photo ? 'transparent' : '#3d3520', border:`1px solid ${accent}33`}}>
-                  {p.photo ? <img src={p.photo} alt="" className="w-full h-full object-cover"/> : p.icon}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <h3 className="font-display text-xl leading-tight">{p.name}</h3>
-                  {p.description && <p className="text-xs opacity-60 mt-0.5 line-clamp-2">{p.description}</p>}
-                  <div className="flex items-center gap-2 mt-1 text-[11px] opacity-50">
-                    {p.type === 'count' ? <span>цель: {p.target}{p.unit ? ' '+p.unit : ''}</span> : <span>отметка факта</span>}
-                    {p.max_reminders > 0 && <span>• до {p.max_reminders} напом.</span>}
+
+      {/* Хлебные крошки */}
+      {currentCatId && (
+        <div className="flex items-center gap-1 mb-4 text-sm overflow-x-auto scrollbar-hide flex-nowrap">
+          <button onClick={() => setCurrentCatId(null)} className="opacity-70 hover:opacity-100 whitespace-nowrap">Все</button>
+          {path.map((c, i) => (
+            <React.Fragment key={c.id}>
+              <span className="opacity-30">/</span>
+              <button onClick={() => setCurrentCatId(c.id)}
+                      className={`whitespace-nowrap ${i === path.length-1 ? '' : 'opacity-70 hover:opacity-100'}`}
+                      style={{color: i === path.length-1 ? '#d4a857' : undefined}}>
+                {c.name}
+              </button>
+            </React.Fragment>
+          ))}
+        </div>
+      )}
+
+      {/* Подкатегории */}
+      {childCats.length > 0 && (
+        <div className="grid grid-cols-2 gap-2 mb-5">
+          {childCats.map((c) => {
+            const allowed = collectDescendants(byParent, c.id);
+            const cnt = catalog.filter(p => (p.category_ids || []).some(id => allowed.has(id))).length;
+            return (
+              <button key={c.id} onClick={() => setCurrentCatId(c.id)}
+                      className="card rounded-xl p-3 text-left transition-all active:scale-[0.99]">
+                <div className="flex items-center gap-2">
+                  {c.icon && <span className="text-lg">{c.icon}</span>}
+                  <div className="flex-1 min-w-0">
+                    <div className="font-display text-base leading-tight truncate">{c.name}</div>
+                    <div className="text-[11px] opacity-50">{cnt} {cnt === 1 ? 'практика' : (cnt >= 2 && cnt <= 4) ? 'практики' : 'практик'}</div>
                   </div>
+                  <ChevronRight size={16} className="opacity-40"/>
                 </div>
-                {isJoined ? <span className="text-xs px-2 py-1 rounded-full" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>в моих</span>
-                          : <ChevronRight size={20} className="opacity-40"/>}
-              </div>
-            </button>
-          );
-        })}
-      </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Список практик */}
+      {visiblePractices.length === 0 ? (
+        <p className="opacity-50 text-center py-12 text-sm">
+          {currentCatId ? 'В этой категории пока нет практик.' : 'Пока нет ни одной практики. Админ ещё их добавляет.'}
+        </p>
+      ) : (
+        <div className="space-y-3">
+          {visiblePractices.map((p) => {
+            const accent = PALETTE[p.palette] || PALETTE.amber;
+            const isJoined = joinedIds.has(p.id);
+            return (
+              <button key={p.id} onClick={() => !isJoined && onJoin(p)} disabled={isJoined}
+                className={`card rounded-2xl p-4 w-full text-left transition-all ${!isJoined ? 'active:scale-[0.99]' : 'opacity-60'}`}>
+                <div className="flex items-center gap-3">
+                  <div className="w-14 h-14 rounded-xl flex items-center justify-center text-3xl overflow-hidden flex-shrink-0"
+                       style={{background: p.photo ? 'transparent' : '#3d3520', border:`1px solid ${accent}33`}}>
+                    {p.photo ? <img src={p.photo} alt="" className="w-full h-full object-cover"/> : p.icon}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-display text-xl leading-tight">{p.name}</h3>
+                    {p.description && <p className="text-xs opacity-60 mt-0.5 line-clamp-2">{p.description}</p>}
+                    <div className="flex items-center gap-2 mt-1 text-[11px] opacity-50">
+                      {p.type === 'count' ? <span>цель: {p.target}{p.unit ? ' '+p.unit : ''}</span> : <span>отметка факта</span>}
+                      {p.max_reminders > 0 && <span>• до {p.max_reminders} напом.</span>}
+                    </div>
+                  </div>
+                  {isJoined ? <span className="text-xs px-2 py-1 rounded-full" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>в моих</span>
+                            : <ChevronRight size={20} className="opacity-40"/>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
