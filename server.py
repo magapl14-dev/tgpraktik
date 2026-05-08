@@ -36,10 +36,9 @@ from fastapi import FastAPI, Header, HTTPException, Request, UploadFile, File, F
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, EmailStr
+from pydantic import BaseModel, Field
 from typing import Optional, Literal
 
-import bcrypt
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 
 from aiogram import Bot, Dispatcher, F
@@ -174,9 +173,6 @@ CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
 CREATE INDEX IF NOT EXISTS idx_practice_categories_cat ON practice_categories(category_id);
 CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
 """
-
-# Диапазон user_id для веб-юзеров (без TG). TG ID < 10^12 в реальности.
-WEB_USER_ID_BASE = 10**12
 
 MAX_CATEGORY_LEVEL = 4
 
@@ -615,15 +611,16 @@ class CategoryIn(BaseModel):
     sort_order: int = 0
 
 
-class RegisterIn(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=8, max_length=128)
-    name: Optional[str] = None
-
-
-class LoginIn(BaseModel):
-    email: EmailStr
-    password: str = Field(min_length=1, max_length=128)
+class TelegramLoginIn(BaseModel):
+    """Данные от Telegram Login Widget. Подпись проверяется HMAC-SHA256
+    с ключом sha256(BOT_TOKEN). См. https://core.telegram.org/widgets/login#checking-authorization"""
+    id: int
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    username: Optional[str] = None
+    photo_url: Optional[str] = None
+    auth_date: int
+    hash: str
 
 
 class JoinIn(BaseModel):
@@ -1180,61 +1177,71 @@ def leaderboard(period: Literal["week", "month", "all"] = "month",
     return items
 
 
-# ─── API: Авторизация (email/пароль для веб-юзеров) ───────────────────────
-@app.post("/api/auth/register")
-def auth_register(body: RegisterIn, response: Response,
+# ─── API: Авторизация (Telegram Login Widget для веб-юзеров) ──────────────
+def verify_telegram_login(data: dict) -> bool:
+    """Проверяет HMAC-подпись от Telegram Login Widget. Алгоритм:
+    secret = sha256(BOT_TOKEN), затем HMAC-SHA256 от data_check_string.
+    https://core.telegram.org/widgets/login#checking-authorization"""
+    if not BOT_TOKEN:
+        return False
+    received_hash = data.get("hash")
+    if not received_hash:
+        return False
+    pairs = sorted(
+        f"{k}={v}" for k, v in data.items()
+        if k != "hash" and v is not None and v != ""
+    )
+    data_check = "\n".join(pairs)
+    secret_key = hashlib.sha256(BOT_TOKEN.encode()).digest()
+    calc = hmac.new(secret_key, data_check.encode(), hashlib.sha256).hexdigest()
+    return hmac.compare_digest(calc, received_hash)
+
+
+# bot_username получаем при старте через bot.get_me()
+BOT_USERNAME: str = ""
+
+
+@app.get("/api/auth/config")
+def auth_config():
+    """Параметры для рендеринга Telegram Login Widget на клиенте."""
+    return {"bot_username": BOT_USERNAME}
+
+
+@app.post("/api/auth/telegram")
+def auth_telegram(body: TelegramLoginIn, response: Response,
                   x_user_tz: str = Header(default="")):
-    email = body.email.lower().strip()
-    name = (body.name or email.split("@")[0]).strip()[:64]
-    pwd_hash = bcrypt.hashpw(body.password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
+    """Получает данные от Telegram Login Widget, проверяет подпись,
+    создаёт/обновляет users и identities, ставит cookie-сессию."""
+    data = body.model_dump(exclude_none=True)
+    # Все поля для подписи — кроме hash. Конвертим всё в строки.
+    check_data = {k: str(v) for k, v in data.items()}
+    if not verify_telegram_login(check_data):
+        raise HTTPException(401, "Подпись Telegram не сошлась")
+    if int(datetime.now(TZ).timestamp()) - body.auth_date > 86400:
+        raise HTTPException(401, "Данные авторизации устарели — открой /login заново")
+
+    uid = body.id
     now = datetime.now(TZ).isoformat()
     auto_tz = x_user_tz if _safe_tz(x_user_tz) else None
     with db() as c:
-        existing = c.execute(
-            "SELECT user_id FROM identities WHERE provider='email' AND external_id=?",
-            (email,),
-        ).fetchone()
-        if existing:
-            raise HTTPException(409, "Юзер с таким email уже зарегистрирован")
-        # Берём свободный user_id из веб-диапазона (TG ID < WEB_USER_ID_BASE).
-        row = c.execute(
-            "SELECT COALESCE(MAX(user_id), ?) AS m FROM users WHERE user_id >= ?",
-            (WEB_USER_ID_BASE - 1, WEB_USER_ID_BASE),
-        ).fetchone()
-        new_uid = (row["m"] or (WEB_USER_ID_BASE - 1)) + 1
         c.execute(
             """INSERT INTO users (user_id, username, first_name, language, created_at, last_seen, tz)
-               VALUES (?, NULL, ?, NULL, ?, ?, ?)""",
-            (new_uid, name, now, now, auto_tz),
+               VALUES (?,?,?,?,?,?,?)
+               ON CONFLICT(user_id) DO UPDATE SET
+                 username=excluded.username,
+                 first_name=excluded.first_name,
+                 last_seen=excluded.last_seen,
+                 tz=COALESCE(users.tz, excluded.tz)""",
+            (uid, body.username, body.first_name, None, now, now, auto_tz),
         )
         c.execute(
-            """INSERT INTO identities (user_id, provider, external_id, password_hash, email_verified, created_at)
-               VALUES (?, 'email', ?, ?, 0, ?)""",
-            (new_uid, email, pwd_hash, now),
+            """INSERT OR IGNORE INTO identities
+               (user_id, provider, external_id, created_at)
+               VALUES (?, 'telegram', ?, ?)""",
+            (uid, str(uid), now),
         )
-    _set_session_cookie(response, new_uid)
-    return {"ok": True, "user_id": new_uid, "email": email, "name": name}
-
-
-@app.post("/api/auth/login")
-def auth_login(body: LoginIn, response: Response):
-    email = body.email.lower().strip()
-    with db() as c:
-        row = c.execute(
-            """SELECT user_id, password_hash FROM identities
-               WHERE provider='email' AND external_id=?""",
-            (email,),
-        ).fetchone()
-    if not row or not row["password_hash"]:
-        raise HTTPException(401, "Неверный email или пароль")
-    try:
-        ok = bcrypt.checkpw(body.password.encode("utf-8"), row["password_hash"].encode("utf-8"))
-    except ValueError:
-        ok = False
-    if not ok:
-        raise HTTPException(401, "Неверный email или пароль")
-    _set_session_cookie(response, row["user_id"])
-    return {"ok": True, "user_id": row["user_id"]}
+    _set_session_cookie(response, uid)
+    return {"ok": True, "user_id": uid, "name": body.first_name or body.username}
 
 
 @app.post("/api/auth/logout")
@@ -1729,8 +1736,16 @@ async def on_startup():
     log.info("BASE_URL = %s", BASE_URL)
     log.info("Admins   = %s", ADMIN_IDS or "(none)")
 
-    global scheduler
+    global scheduler, BOT_USERNAME
     if bot:
+        # Получаем username бота — нужен для рендеринга Telegram Login Widget на /login
+        try:
+            me_bot = await bot.get_me()
+            BOT_USERNAME = me_bot.username or ""
+            log.info("Bot username = @%s", BOT_USERNAME)
+        except Exception as e:
+            log.warning("Не удалось получить bot username: %s", e)
+
         # Установим команды и кнопку меню
         try:
             await bot.set_my_commands([

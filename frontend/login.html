@@ -5,9 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Вход · Мои практики</title>
 <script src="https://cdn.tailwindcss.com"></script>
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
   html, body { background: #0a0c14; }
@@ -20,20 +17,37 @@
       linear-gradient(180deg, #0d1018 0%, #0a0c14 100%);
     min-height: 100vh; min-height: 100dvh;
   }
-  .input-field { background: rgba(255,250,235,0.04); border: 1px solid rgba(244,234,213,0.12);
-                 color: #f4ead5; transition: all 0.2s; }
-  .input-field:focus { outline: none; border-color: rgba(212,168,87,0.5); }
-  .fade-in { animation: fadeIn 0.3s ease-out; }
+  .fade-in { animation: fadeIn 0.4s ease-out; }
   @keyframes fadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 </style>
 </head>
 <body class="app-bg">
-<div id="root" class="min-h-screen flex items-center justify-center p-4">
-  <div class="opacity-60 font-display text-xl">загружаем...</div>
+<div class="min-h-screen flex items-center justify-center p-4">
+  <div class="w-full max-w-sm fade-in text-center">
+    <header class="mb-10">
+      <h1 class="font-display text-5xl font-light leading-tight">Мои <em style="color:#d4a857">практики</em></h1>
+      <p class="opacity-60 text-sm mt-3">Вход через Telegram</p>
+    </header>
+
+    <div id="loading" class="opacity-60 font-display text-lg">проверяем сессию...</div>
+    <div id="widget-host" class="hidden flex justify-center min-h-[44px]"></div>
+    <div id="error" class="hidden mt-4 px-3 py-2 rounded-xl text-sm"
+         style="background:rgba(232,128,128,0.10); border:1px solid rgba(232,128,128,0.3); color:#e88080"></div>
+
+    <p id="hint" class="hidden text-xs opacity-50 mt-8 leading-relaxed">
+      Кнопка откроет Telegram, попросит подтвердить вход — и вернёт сюда.
+      Один аккаунт работает и в боте, и в браузере.
+    </p>
+  </div>
 </div>
 
-<script type="text/babel" data-presets="react">
-const { useState, useEffect } = React;
+<script>
+const $ = (id) => document.getElementById(id);
+const showError = (msg) => {
+  $('error').textContent = msg;
+  $('error').classList.remove('hidden');
+  $('loading').classList.add('hidden');
+};
 
 const api = async (path, opts = {}) => {
   const r = await fetch(path, {
@@ -46,102 +60,63 @@ const api = async (path, opts = {}) => {
   return data;
 };
 
-function App() {
-  const [mode, setMode] = useState('login'); // 'login' | 'register'
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [name, setName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState('');
-  const [checking, setChecking] = useState(true);
+// Callback из Telegram Login Widget
+window.onTelegramAuth = async (user) => {
+  $('loading').textContent = 'входим...';
+  $('loading').classList.remove('hidden');
+  $('widget-host').classList.add('hidden');
+  $('error').classList.add('hidden');
+  try {
+    await api('/api/auth/telegram', {
+      method: 'POST',
+      body: JSON.stringify(user),
+      headers: { 'X-User-TZ': (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return ''; } })() },
+    });
+    window.location.replace('/app');
+  } catch (e) {
+    showError(e.message);
+    $('widget-host').classList.remove('hidden');
+  }
+};
 
-  // Если уже залогинен — редирект на /app
-  useEffect(() => {
-    (async () => {
-      try {
-        await api('/api/me');
-        window.location.replace('/app');
-      } catch (e) {
-        setChecking(false);
-      }
-    })();
-  }, []);
-
-  const submit = async (e) => {
-    e.preventDefault();
-    setErr(''); setBusy(true);
-    try {
-      const path = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
-      const body = mode === 'login' ? { email, password } : { email, password, name: name.trim() || null };
-      await api(path, { method: 'POST', body: JSON.stringify(body) });
-      window.location.replace('/app');
-    } catch (e) {
-      setErr(e.message);
-      setBusy(false);
-    }
-  };
-
-  if (checking) {
-    return <div className="opacity-60 font-display text-xl">проверяем сессию...</div>;
+(async () => {
+  // Если уже залогинен — на /app
+  try {
+    await api('/api/me');
+    window.location.replace('/app');
+    return;
+  } catch (e) {
+    // не залогинен — продолжаем
   }
 
-  return (
-    <div className="w-full max-w-sm fade-in">
-      <header className="text-center mb-8">
-        <h1 className="font-display text-5xl font-light leading-tight">Мои <em style={{color:'#d4a857'}}>практики</em></h1>
-        <p className="opacity-60 text-sm mt-2">Вход без Telegram</p>
-      </header>
+  // Получаем имя бота
+  let cfg;
+  try {
+    cfg = await api('/api/auth/config');
+  } catch (e) {
+    showError('Не удалось получить конфиг сервера: ' + e.message);
+    return;
+  }
+  if (!cfg.bot_username) {
+    showError('У бота не задан username — TG Login Widget не работает. Проверь, что BOT_TOKEN настроен и в @BotFather у бота установлен @username.');
+    return;
+  }
 
-      <div className="flex gap-2 mb-5 bg-white/5 rounded-full p-1">
-        {[['login','Войти'],['register','Регистрация']].map(([v,l]) => (
-          <button key={v} onClick={() => { setMode(v); setErr(''); }}
-            className="flex-1 py-2 rounded-full text-sm transition-all"
-            style={{
-              background: mode === v ? 'rgba(212,168,87,0.15)' : 'transparent',
-              color: mode === v ? '#d4a857' : '#f4ead5',
-              border: `1px solid ${mode === v ? 'rgba(212,168,87,0.4)' : 'transparent'}`,
-            }}>{l}</button>
-        ))}
-      </div>
+  // Рендерим виджет
+  const s = document.createElement('script');
+  s.async = true;
+  s.src = 'https://telegram.org/js/telegram-widget.js?22';
+  s.setAttribute('data-telegram-login', cfg.bot_username);
+  s.setAttribute('data-size', 'large');
+  s.setAttribute('data-radius', '16');
+  s.setAttribute('data-onauth', 'onTelegramAuth(user)');
+  s.setAttribute('data-request-access', 'write');
+  $('widget-host').appendChild(s);
 
-      <form onSubmit={submit} className="space-y-3">
-        {mode === 'register' && (
-          <input type="text" value={name} onChange={(e) => setName(e.target.value)}
-                 placeholder="Имя (необязательно)"
-                 className="input-field w-full px-4 py-3 rounded-xl"/>
-        )}
-        <input type="email" value={email} onChange={(e) => setEmail(e.target.value)}
-               placeholder="Email" autoComplete="email" required
-               className="input-field w-full px-4 py-3 rounded-xl"/>
-        <input type="password" value={password} onChange={(e) => setPassword(e.target.value)}
-               placeholder={mode === 'register' ? 'Пароль (минимум 8 символов)' : 'Пароль'}
-               autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-               minLength={mode === 'register' ? 8 : 1}
-               required
-               className="input-field w-full px-4 py-3 rounded-xl"/>
-
-        {err && (
-          <div className="px-3 py-2 rounded-xl text-sm"
-               style={{background:'rgba(232,128,128,0.10)', border:'1px solid rgba(232,128,128,0.3)', color:'#e88080'}}>
-            {err}
-          </div>
-        )}
-
-        <button type="submit" disabled={busy}
-          className="w-full py-3.5 rounded-full font-medium transition-transform active:scale-[0.99] disabled:opacity-50"
-          style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
-          {busy ? '...' : (mode === 'login' ? 'Войти' : 'Создать аккаунт')}
-        </button>
-      </form>
-
-      <p className="text-[11px] opacity-40 text-center mt-6">
-        У тебя есть Telegram? Открой бота и используй кнопку «Практики» — стрики и подписки оттуда отдельные от веб-аккаунта.
-      </p>
-    </div>
-  );
-}
-
-ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+  $('loading').classList.add('hidden');
+  $('widget-host').classList.remove('hidden');
+  $('hint').classList.remove('hidden');
+})();
 </script>
 </body>
 </html>
