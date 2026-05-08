@@ -1,0 +1,449 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>Мои практики — трекер регулярности</title>
+<meta name="description" content="Трекер регулярных практик с напоминаниями в Telegram, стриками, историей и рейтингом. Делай то, что выбрал — день за днём.">
+<meta property="og:title" content="Мои практики">
+<meta property="og:description" content="Трекер регулярных практик. Делай то, что выбрал — день за днём.">
+<meta property="og:type" content="website">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0a0c14">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<script src="https://cdn.tailwindcss.com"></script>
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  html, body { background: #0a0c14; }
+  body { margin: 0; -webkit-tap-highlight-color: transparent; color: #f4ead5; font-family: 'Manrope', system-ui, sans-serif; }
+  .font-display { font-family: 'Cormorant Garamond', Georgia, serif; }
+  .app-bg {
+    background:
+      radial-gradient(ellipse at 20% 0%, rgba(212,168,87,0.10), transparent 50%),
+      radial-gradient(ellipse at 80% 30%, rgba(127,179,211,0.05), transparent 50%),
+      radial-gradient(ellipse at 50% 80%, rgba(163,177,138,0.04), transparent 50%),
+      linear-gradient(180deg, #0d1018 0%, #0a0c14 100%);
+  }
+  .card { background: linear-gradient(180deg, rgba(255,250,235,0.04) 0%, rgba(255,250,235,0.02) 100%);
+          border: 1px solid rgba(244,234,213,0.08); }
+  .card-warm { background: linear-gradient(180deg, rgba(212,168,87,0.10), rgba(212,168,87,0.04));
+               border: 1px solid rgba(212,168,87,0.25); }
+  .btn-primary { background: linear-gradient(135deg, #d4a857, #b8902f); color: #1a1410;
+                 transition: transform 0.15s; }
+  .btn-primary:active { transform: scale(0.98); }
+  .btn-ghost { border: 1px solid rgba(244,234,213,0.18); color: #f4ead5;
+               transition: border-color 0.15s; }
+  .btn-ghost:hover { border-color: rgba(212,168,87,0.5); }
+  .reveal { opacity: 0; transform: translateY(20px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+  .reveal.in { opacity: 1; transform: translateY(0); }
+  .heat-cell { width: 12px; height: 12px; border-radius: 3px; }
+  .scrollbar-hide::-webkit-scrollbar { display: none; }
+  .scrollbar-hide { scrollbar-width: none; }
+  .gradient-text {
+    background: linear-gradient(135deg, #f4ead5 0%, #d4a857 60%, #e0bd6a 100%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+</style>
+</head>
+<body class="app-bg">
+
+<!-- ─── Хедер ─── -->
+<nav class="sticky top-0 z-40 backdrop-blur-md" style="background:rgba(10,12,20,0.7); border-bottom:1px solid rgba(244,234,213,0.06);">
+  <div class="max-w-6xl mx-auto px-5 h-14 flex items-center justify-between">
+    <a href="/" class="flex items-center gap-2">
+      <span class="text-2xl">✨</span>
+      <span class="font-display text-xl">Мои <em style="color:#d4a857">практики</em></span>
+    </a>
+    <div class="flex items-center gap-2">
+      <a href="/login" class="btn-ghost px-4 py-1.5 rounded-full text-sm hidden sm:inline-block">Войти</a>
+      <a id="nav-tg" href="#open" class="btn-primary px-4 py-1.5 rounded-full text-sm font-medium">Начать</a>
+    </div>
+  </div>
+</nav>
+
+<!-- ─── Hero ─── -->
+<section class="px-5 pt-16 pb-20 sm:pt-24 sm:pb-28 max-w-4xl mx-auto text-center">
+  <p class="text-xs uppercase tracking-[0.3em] opacity-50 mb-5">Трекер регулярности</p>
+  <h1 class="font-display text-5xl sm:text-6xl md:text-7xl font-light leading-[1.05] mb-6">
+    Делай то, что выбрал —<br>
+    <span class="gradient-text">день за днём</span>.
+  </h1>
+  <p class="text-base sm:text-lg opacity-70 max-w-2xl mx-auto leading-relaxed mb-10">
+    Медитация, бег, чтение, холодный душ — что угодно из того, что должно стать твоим.
+    Мы напоминаем мягко, считаем стрики честно и показываем, как ты идёшь.
+  </p>
+  <div class="flex flex-col sm:flex-row gap-3 justify-center items-center">
+    <a id="hero-tg" href="#open" class="btn-primary px-8 py-3.5 rounded-full font-medium text-base inline-flex items-center gap-2 w-full sm:w-auto justify-center">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+      Открыть в Telegram
+    </a>
+    <a href="/login" class="btn-ghost px-8 py-3.5 rounded-full font-medium text-base w-full sm:w-auto inline-block">
+      Войти через сайт
+    </a>
+  </div>
+  <p class="text-xs opacity-40 mt-6">Бесплатно · работает в боте, в браузере и как PWA</p>
+</section>
+
+<!-- ─── Превью UI ─── -->
+<section class="px-5 pb-24">
+  <div class="max-w-md mx-auto reveal">
+    <div class="card rounded-3xl p-5 shadow-2xl" style="box-shadow: 0 30px 80px rgba(212,168,87,0.08), 0 10px 30px rgba(0,0,0,0.4);">
+      <div class="mb-5">
+        <p class="text-[10px] uppercase tracking-widest opacity-50 mb-1">Сегодня</p>
+        <h3 class="font-display text-3xl font-light">Мои <em style="color:#d4a857">практики</em></h3>
+        <div class="flex items-center gap-1.5 mt-2 text-xs" style="color:#d4a857">
+          <span>🔥</span><span>14 дней полностью</span>
+          <span class="opacity-50">· рекорд 21</span>
+        </div>
+        <div class="mt-3">
+          <div class="flex items-baseline justify-between mb-1.5 text-xs">
+            <span class="opacity-70">Прогресс</span>
+            <span class="font-display text-base"><span style="color:#d4a857">3</span><span class="opacity-40"> / 4</span></span>
+          </div>
+          <div class="h-1 rounded-full" style="background:rgba(244,234,213,0.08);">
+            <div class="h-full rounded-full" style="width:75%; background:linear-gradient(90deg,#d4a857,#e0bd6a);"></div>
+          </div>
+        </div>
+      </div>
+      <div class="space-y-2.5">
+        <div class="card-warm rounded-2xl p-3 flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style="background:#3d3520; border:1px solid #d4a85733;">🧘</div>
+          <div class="flex-1 min-w-0">
+            <div class="font-display text-base" style="color:#d4a857">Утренняя медитация</div>
+            <div class="text-[11px] opacity-60 flex gap-2"><span>🔥 14 дней</span></div>
+          </div>
+          <div class="w-9 h-9 rounded-full flex items-center justify-center" style="background:linear-gradient(135deg,#d4a857,#b8902f); color:#1a1410;">✓</div>
+        </div>
+        <div class="card-warm rounded-2xl p-3 flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style="background:#4a2a22; border:1px solid #cf877033;">🏃</div>
+          <div class="flex-1 min-w-0">
+            <div class="font-display text-base" style="color:#d4a857">Бег</div>
+            <div class="text-[11px] opacity-60">3 / 3 км</div>
+          </div>
+          <div class="text-xs px-2 py-0.5 rounded-full" style="background:rgba(212,168,87,0.15); color:#d4a857;">готово</div>
+        </div>
+        <div class="card rounded-2xl p-3 flex items-center gap-3" style="opacity:0.85;">
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style="background:#22384a; border:1px solid #7fb3d333;">💧</div>
+          <div class="flex-1 min-w-0">
+            <div class="font-display text-base">Холодный душ</div>
+            <div class="text-[11px] opacity-50">только факт</div>
+          </div>
+          <div class="w-9 h-9 rounded-full" style="border:1.5px solid rgba(244,234,213,0.2);"></div>
+        </div>
+        <div class="card-warm rounded-2xl p-3 flex items-center gap-3">
+          <div class="w-10 h-10 rounded-xl flex items-center justify-center text-xl" style="background:#3d3520; border:1px solid #e0bd6a33;">📖</div>
+          <div class="flex-1 min-w-0">
+            <div class="font-display text-base" style="color:#d4a857">Чтение</div>
+            <div class="text-[11px] opacity-60">30 / 30 мин</div>
+          </div>
+          <div class="w-9 h-9 rounded-full flex items-center justify-center" style="background:linear-gradient(135deg,#d4a857,#b8902f); color:#1a1410;">✓</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Зачем это ─── -->
+<section class="px-5 py-20 sm:py-28 max-w-5xl mx-auto">
+  <div class="reveal text-center mb-16">
+    <p class="text-xs uppercase tracking-[0.3em] opacity-50 mb-3">Зачем</p>
+    <h2 class="font-display text-4xl sm:text-5xl font-light leading-tight">
+      Регулярность — это<br><em style="color:#d4a857">тихая сила</em>
+    </h2>
+    <p class="opacity-70 mt-5 max-w-2xl mx-auto leading-relaxed">
+      Не «я начну с понедельника», а «я делаю это сегодня. И вчера. И завтра». Месяц спустя ты другой
+      человек — но переход незаметен. Чтобы не потерять нить, нужна тонкая страховка.
+    </p>
+  </div>
+
+  <div class="grid md:grid-cols-3 gap-4">
+    <div class="reveal card rounded-2xl p-6">
+      <div class="text-3xl mb-4">🪶</div>
+      <h3 class="font-display text-2xl mb-2">Мягкие напоминания</h3>
+      <p class="text-sm opacity-70 leading-relaxed">
+        Бот пишет в окно, которое ты сам выбрал. Не более 10 раз в день, не ночью.
+        Закрыл день — больше не трогает. Уехал — поставь паузу одной командой,
+        стрик не порвётся.
+      </p>
+    </div>
+    <div class="reveal card rounded-2xl p-6">
+      <div class="text-3xl mb-4">🔥</div>
+      <h3 class="font-display text-2xl mb-2">Видимый прогресс</h3>
+      <p class="text-sm opacity-70 leading-relaxed">
+        Стрик за каждую практику и стрик «полного дня». Heatmap за 70 дней —
+        видно, где провалы и где волна. Рекорды, к которым возвращаешься.
+      </p>
+    </div>
+    <div class="reveal card rounded-2xl p-6">
+      <div class="text-3xl mb-4">🌳</div>
+      <h3 class="font-display text-2xl mb-2">Структура</h3>
+      <p class="text-sm opacity-70 leading-relaxed">
+        Категории до четырёх уровней: «Здоровье / Телесные / Активные».
+        Практика может быть сразу в нескольких ветках —
+        холодный душ это и здоровье, и мужские практики.
+      </p>
+    </div>
+    <div class="reveal card rounded-2xl p-6">
+      <div class="text-3xl mb-4">🏆</div>
+      <h3 class="font-display text-2xl mb-2">Сообщество</h3>
+      <p class="text-sm opacity-70 leading-relaxed">
+        Рейтинг по проценту выполнения — за неделю, месяц, всё время.
+        Не соревнование, а зеркало: ты видишь, что не один.
+      </p>
+    </div>
+    <div class="reveal card rounded-2xl p-6">
+      <div class="text-3xl mb-4">📅</div>
+      <h3 class="font-display text-2xl mb-2">Можно отметить вчера</h3>
+      <p class="text-sm opacity-70 leading-relaxed">
+        Забыл вечером — открой карточку утром, тапни на нужный день в календаре.
+        Никаких «потерял прогресс из-за невнимательности».
+      </p>
+    </div>
+    <div class="reveal card rounded-2xl p-6">
+      <div class="text-3xl mb-4">🌍</div>
+      <h3 class="font-display text-2xl mb-2">Везде свой</h3>
+      <p class="text-sm opacity-70 leading-relaxed">
+        Telegram-бот, Mini App, веб-браузер, PWA на телефоне —
+        один аккаунт через Telegram-логин. Стрики и подписки везде те же.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Как это работает ─── -->
+<section class="px-5 py-20 sm:py-24 max-w-4xl mx-auto">
+  <div class="reveal text-center mb-14">
+    <p class="text-xs uppercase tracking-[0.3em] opacity-50 mb-3">Три шага</p>
+    <h2 class="font-display text-4xl sm:text-5xl font-light leading-tight">
+      Как <em style="color:#d4a857">начать</em>
+    </h2>
+  </div>
+  <div class="space-y-4">
+    <div class="reveal card rounded-2xl p-6 flex items-start gap-5">
+      <div class="font-display text-5xl flex-shrink-0" style="color:#d4a857; line-height:0.9;">1</div>
+      <div>
+        <h3 class="font-display text-2xl mb-1">Войти через Telegram</h3>
+        <p class="opacity-70 text-sm leading-relaxed">
+          Один тап в боте или на сайте — и всё. Никаких email, паролей и подтверждений.
+        </p>
+      </div>
+    </div>
+    <div class="reveal card rounded-2xl p-6 flex items-start gap-5">
+      <div class="font-display text-5xl flex-shrink-0" style="color:#d4a857; line-height:0.9;">2</div>
+      <div>
+        <h3 class="font-display text-2xl mb-1">Выбрать практики</h3>
+        <p class="opacity-70 text-sm leading-relaxed">
+          Из готового каталога. Установи срок: неделя, месяц или без ограничения.
+          Можешь начать с одной — добавить остальные позже.
+        </p>
+      </div>
+    </div>
+    <div class="reveal card rounded-2xl p-6 flex items-start gap-5">
+      <div class="font-display text-5xl flex-shrink-0" style="color:#d4a857; line-height:0.9;">3</div>
+      <div>
+        <h3 class="font-display text-2xl mb-1">Отмечать каждый день</h3>
+        <p class="opacity-70 text-sm leading-relaxed">
+          Тап на «✓» или ввод количества. Бот напомнит, если забудешь, в твоё окно времени.
+          Через две недели увидишь, что получается.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Heatmap превью ─── -->
+<section class="px-5 py-20 max-w-4xl mx-auto">
+  <div class="reveal grid md:grid-cols-2 gap-10 items-center">
+    <div>
+      <p class="text-xs uppercase tracking-[0.3em] opacity-50 mb-3">История</p>
+      <h2 class="font-display text-4xl font-light leading-tight mb-4">
+        Видеть себя <em style="color:#d4a857">сверху</em>
+      </h2>
+      <p class="opacity-70 leading-relaxed mb-3">
+        70 дней одной картинкой. Тёмный квадрат — провал, золотой — день закрыт полностью.
+        За пять секунд понятно, где ты сейчас и как идёт.
+      </p>
+      <p class="opacity-70 leading-relaxed">
+        Тапни на любой день — откроется карточка с практиками и можно изменить отметку,
+        даже задним числом.
+      </p>
+    </div>
+    <div class="card rounded-2xl p-5">
+      <div class="flex gap-1" id="heatmap-demo"></div>
+      <div class="flex items-center gap-2 mt-3 text-[11px] opacity-50">
+        <span>меньше</span>
+        <span class="heat-cell" style="background:rgba(244,234,213,0.10);"></span>
+        <span class="heat-cell" style="background:rgba(212,168,87,0.28);"></span>
+        <span class="heat-cell" style="background:rgba(212,168,87,0.55);"></span>
+        <span class="heat-cell" style="background:#d4a857;"></span>
+        <span>больше</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── FAQ ─── -->
+<section class="px-5 py-20 sm:py-24 max-w-3xl mx-auto">
+  <div class="reveal text-center mb-12">
+    <p class="text-xs uppercase tracking-[0.3em] opacity-50 mb-3">Частые вопросы</p>
+    <h2 class="font-display text-4xl sm:text-5xl font-light leading-tight">
+      Что <em style="color:#d4a857">спрашивают</em>
+    </h2>
+  </div>
+  <div class="space-y-3">
+    <details class="reveal card rounded-2xl p-5 cursor-pointer">
+      <summary class="font-display text-xl list-none flex justify-between items-center">
+        А если я пропущу день?
+        <span class="opacity-50 text-sm ml-2">+</span>
+      </summary>
+      <p class="opacity-70 text-sm leading-relaxed mt-3">
+        День пропущен — стрик прерывается. Но если ты осознанно ставишь паузу через
+        <code class="text-xs opacity-80" style="color:#d4a857">/stop</code> в боте — на день
+        пропуск не считается, можешь отдохнуть и вернуться. Также можно отметить вчерашний
+        день, если просто забыл.
+      </p>
+    </details>
+    <details class="reveal card rounded-2xl p-5 cursor-pointer">
+      <summary class="font-display text-xl list-none flex justify-between items-center">
+        Можно ли свою практику добавить?
+        <span class="opacity-50 text-sm ml-2">+</span>
+      </summary>
+      <p class="opacity-70 text-sm leading-relaxed mt-3">
+        Сейчас каталог управляется кураторами — это сохраняет качество и общий язык.
+        Если у тебя есть идея практики, которую стоит добавить, напиши в боте.
+      </p>
+    </details>
+    <details class="reveal card rounded-2xl p-5 cursor-pointer">
+      <summary class="font-display text-xl list-none flex justify-between items-center">
+        Это бесплатно?
+        <span class="opacity-50 text-sm ml-2">+</span>
+      </summary>
+      <p class="opacity-70 text-sm leading-relaxed mt-3">
+        Полностью бесплатно. Открытый код, серверы небольшие — пока хватает.
+        Если когда-то появится платная функция — она будет дополнением, не заменой.
+      </p>
+    </details>
+    <details class="reveal card rounded-2xl p-5 cursor-pointer">
+      <summary class="font-display text-xl list-none flex justify-between items-center">
+        У меня нет Telegram. Что делать?
+        <span class="opacity-50 text-sm ml-2">+</span>
+      </summary>
+      <p class="opacity-70 text-sm leading-relaxed mt-3">
+        Сейчас вход только через Telegram-аккаунт — это даёт нам подпись и понимание,
+        кто ты, без email и паролей. Telegram бесплатный, ставится за минуту.
+        Если это совсем не вариант — напиши, рассмотрим другие способы входа.
+      </p>
+    </details>
+    <details class="reveal card rounded-2xl p-5 cursor-pointer">
+      <summary class="font-display text-xl list-none flex justify-between items-center">
+        Как это связано с моим телефоном?
+        <span class="opacity-50 text-sm ml-2">+</span>
+      </summary>
+      <p class="opacity-70 text-sm leading-relaxed mt-3">
+        Открой сайт в браузере → «Установить приложение» (Android, ПК) или
+        «Поделиться → На главный экран» (iOS). Это PWA — иконка как у обычного
+        приложения, открывается на весь экран, работает оффлайн (отметки сохранятся,
+        когда сеть появится).
+      </p>
+    </details>
+  </div>
+</section>
+
+<!-- ─── Final CTA ─── -->
+<section id="open" class="px-5 py-24 sm:py-32 max-w-3xl mx-auto text-center">
+  <div class="reveal">
+    <h2 class="font-display text-5xl sm:text-6xl font-light leading-[1.05] mb-6">
+      Сделай первое <em style="color:#d4a857">сегодня</em>
+    </h2>
+    <p class="opacity-70 text-base sm:text-lg max-w-xl mx-auto mb-10 leading-relaxed">
+      Не «потом разберусь». Не «когда найдётся время». Открой бота, выбери одну практику,
+      установи срок — неделю. Дальше станет понятно.
+    </p>
+    <div class="flex flex-col sm:flex-row gap-3 justify-center items-center">
+      <a id="cta-tg" href="#" class="btn-primary px-8 py-3.5 rounded-full font-medium text-base inline-flex items-center gap-2 w-full sm:w-auto justify-center">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M11.944 0A12 12 0 0 0 0 12a12 12 0 0 0 12 12 12 12 0 0 0 12-12A12 12 0 0 0 12 0a12 12 0 0 0-.056 0zm4.962 7.224c.1-.002.321.023.465.14a.506.506 0 0 1 .171.325c.016.093.036.306.02.472-.18 1.898-.962 6.502-1.36 8.627-.168.9-.499 1.201-.82 1.23-.696.065-1.225-.46-1.9-.902-1.056-.693-1.653-1.124-2.678-1.8-1.185-.78-.417-1.21.258-1.91.177-.184 3.247-2.977 3.307-3.23.007-.032.014-.15-.056-.212s-.174-.041-.249-.024c-.106.024-1.793 1.14-5.061 3.345-.48.33-.913.49-1.302.48-.428-.008-1.252-.241-1.865-.44-.752-.245-1.349-.374-1.297-.789.027-.216.325-.437.893-.663 3.498-1.524 5.83-2.529 6.998-3.014 3.332-1.386 4.025-1.627 4.476-1.635z"/></svg>
+        Открыть в Telegram
+      </a>
+      <a href="/login" class="btn-ghost px-8 py-3.5 rounded-full font-medium text-base w-full sm:w-auto inline-block">
+        Войти через сайт
+      </a>
+    </div>
+  </div>
+</section>
+
+<!-- ─── Footer ─── -->
+<footer class="px-5 py-12 border-t" style="border-color:rgba(244,234,213,0.06);">
+  <div class="max-w-6xl mx-auto flex flex-col sm:flex-row justify-between items-center gap-4 text-xs opacity-50">
+    <div>© 2026 Мои практики · открытый исходный код</div>
+    <div class="flex gap-5">
+      <a href="https://github.com/magapl14-dev/tgpraktik" class="hover:opacity-100 transition" target="_blank" rel="noopener">GitHub</a>
+      <a href="/app" class="hover:opacity-100 transition">Приложение</a>
+      <a href="/login" class="hover:opacity-100 transition">Войти</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+// ─── Подгружаем bot_username для CTA-ссылок ───
+(async () => {
+  try {
+    const r = await fetch('/api/auth/config', { credentials: 'omit' });
+    if (!r.ok) return;
+    const cfg = await r.json();
+    if (cfg.bot_username) {
+      const url = `https://t.me/${cfg.bot_username}?start=landing`;
+      ['nav-tg', 'hero-tg', 'cta-tg'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) { el.href = url; el.target = '_blank'; el.rel = 'noopener'; }
+      });
+    }
+  } catch (e) { /* без TG-ссылки оставим якоря на #open */ }
+})();
+
+// ─── Reveal-анимации при скролле ───
+const io = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); io.unobserve(e.target); } });
+}, { threshold: 0.1, rootMargin: '0px 0px -40px 0px' });
+document.querySelectorAll('.reveal').forEach(el => io.observe(el));
+
+// ─── Демо-heatmap (псевдо-данные) ───
+(() => {
+  const el = document.getElementById('heatmap-demo');
+  if (!el) return;
+  const colors = [
+    'rgba(244,234,213,0.10)', 'rgba(212,168,87,0.28)',
+    'rgba(212,168,87,0.55)', '#d4a857',
+  ];
+  // Заранее «нарисованный» паттерн: начальные неуверенные дни, затем плотные.
+  const weeks = 10;
+  for (let c = 0; c < weeks; c++) {
+    const col = document.createElement('div');
+    col.className = 'flex flex-col gap-1';
+    for (let r = 0; r < 7; r++) {
+      const cell = document.createElement('div');
+      cell.className = 'heat-cell';
+      // Псевдослучайно но детерминированно
+      let level;
+      const progress = c / (weeks - 1);
+      const seed = (c * 7 + r * 31) % 11;
+      if (progress < 0.3) {
+        level = seed > 7 ? 1 : 0;
+      } else if (progress < 0.6) {
+        level = seed > 8 ? 0 : seed > 5 ? 1 : 2;
+      } else {
+        level = seed > 9 ? 1 : seed > 6 ? 2 : 3;
+      }
+      cell.style.background = colors[level];
+      col.appendChild(cell);
+    }
+    el.appendChild(col);
+  }
+})();
+
+// ─── PWA SW ───
+if ('serviceWorker' in navigator && location.protocol === 'https:') {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+</script>
+</body>
+</html>

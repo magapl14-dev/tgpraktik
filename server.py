@@ -893,7 +893,12 @@ app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], all
 
 @app.get("/")
 def root():
-    return FileResponse("frontend/app.html")
+    return FileResponse("frontend/landing.html")
+
+
+@app.get("/landing")
+def landing_page():
+    return FileResponse("frontend/landing.html")
 
 
 @app.get("/app")
