@@ -327,6 +327,82 @@ def _seed_demo(c) -> int:
     return created
 
 
+# ─── PWA-ИКОНКИ ────────────────────────────────────────────────────────────
+PWA_ICONS_DIR = Path("frontend")
+
+def _generate_pwa_icons():
+    """При старте рисует иконки через Pillow, если их ещё нет.
+    Дизайн: амбра-фон + символ ✨ в центре. Maskable-вариант имеет safe-zone 80%.
+    Не перезаписывает существующие — админ может заменить вручную."""
+    targets = [
+        ("icon-192.png", 192, False),
+        ("icon-512.png", 512, False),
+        ("icon-180.png", 180, False),       # apple-touch-icon
+        ("icon-512-maskable.png", 512, True),
+    ]
+    if all((PWA_ICONS_DIR / name).exists() for name, _, _ in targets):
+        return
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except Exception as e:
+        log.warning("Pillow недоступен, иконки PWA не сгенерированы: %s", e)
+        return
+
+    bg = (212, 168, 87)        # #d4a857 amber
+    fg = (26, 20, 16)          # #1a1410 тёмный
+    symbol = "✨"
+
+    # Подбираем шрифт с поддержкой эмодзи (если есть на системе).
+    candidates = [
+        "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        "/Library/Fonts/Apple Color Emoji.ttc",
+        "C:/Windows/Fonts/seguiemj.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+    ]
+    font_path = next((p for p in candidates if os.path.exists(p)), None)
+
+    for name, size, maskable in targets:
+        out = PWA_ICONS_DIR / name
+        if out.exists():
+            continue
+        img = Image.new("RGB", (size, size), bg)
+        draw = ImageDraw.Draw(img)
+        # Maskable: safe-zone — оставляем 80% от площади (10% padding с каждой стороны).
+        fz = int(size * (0.55 if maskable else 0.7))
+        font = None
+        if font_path:
+            try:
+                font = ImageFont.truetype(font_path, fz)
+            except Exception:
+                font = None
+        if font is None:
+            font = ImageFont.load_default()
+        # Если у дефолтного шрифта нет эмодзи — используем «П» как фоллбек
+        text = symbol
+        try:
+            bbox = draw.textbbox((0, 0), text, font=font)
+            if bbox[2] - bbox[0] < 4 or bbox[3] - bbox[1] < 4:
+                raise ValueError("symbol not rendered")
+        except Exception:
+            text = "П"
+            try:
+                font = ImageFont.truetype(font_path, fz) if font_path else ImageFont.load_default()
+            except Exception:
+                font = ImageFont.load_default()
+            bbox = draw.textbbox((0, 0), text, font=font)
+        w = bbox[2] - bbox[0]
+        h = bbox[3] - bbox[1]
+        x = (size - w) / 2 - bbox[0]
+        y = (size - h) / 2 - bbox[1]
+        draw.text((x, y), text, fill=fg, font=font)
+        try:
+            img.save(str(out), "PNG", optimize=True)
+            log.info("PWA icon: %s (%dx%d)", name, size, size)
+        except Exception as e:
+            log.warning("Не сохранить иконку %s: %s", name, e)
+
+
 def seed_demo_once():
     """Вызывается при старте. Заливает демо ровно один раз — флаг в app_meta защищает
     от воскрешения удалённых админом практик при следующих рестартах."""
@@ -833,6 +909,20 @@ def admin_page():
 @app.get("/healthz")
 def healthz():
     return {"ok": True, "ts": datetime.now(TZ).isoformat()}
+
+
+# ─── PWA: manifest и service worker должны жить в корне (для scope=/) ────
+@app.get("/manifest.webmanifest")
+def pwa_manifest():
+    return FileResponse("frontend/manifest.webmanifest", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def pwa_service_worker():
+    """Отдаём sw.js из корня — иначе scope ограничится /static/ и SW
+    не сможет перехватывать /app, /login и т. п."""
+    return FileResponse("frontend/sw.js", media_type="application/javascript",
+                        headers={"Service-Worker-Allowed": "/"})
 
 
 # ─── API: Пользователь ────────────────────────────────────────────────────
@@ -1731,6 +1821,7 @@ async def on_startup():
     _init_secret()
     seed_demo_once()
     Path("frontend").mkdir(exist_ok=True)
+    _generate_pwa_icons()
     log.info("DB ready at %s", DB_PATH.absolute())
     log.info("Photos at %s", PHOTOS_DIR.absolute())
     log.info("BASE_URL = %s", BASE_URL)

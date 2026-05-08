@@ -4,6 +4,12 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>Мои практики</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0a0c14">
+<link rel="apple-touch-icon" href="/static/icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Практики">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
@@ -54,6 +60,12 @@ const tg = window.Telegram?.WebApp;
 const initData = tg?.initData || '';
 const userTz = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return ''; } })();
 if (tg) { tg.ready(); tg.expand(); tg.setHeaderColor && tg.setHeaderColor('#0a0c14'); }
+
+// Регистрируем Service Worker (PWA, оффлайн-кеш). В Telegram Mini App
+// SW не работает, но регистрация просто упадёт молча.
+if ('serviceWorker' in navigator && location.protocol === 'https:' && !initData) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
 
 // ─── API ───
 const api = async (path, opts = {}) => {
