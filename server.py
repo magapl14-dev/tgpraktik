@@ -1985,6 +1985,114 @@ def admin_users(user: dict = Depends(current_admin)):
     return [dict(r) for r in rows]
 
 
+@app.get("/api/admin/users/{uid}/history")
+def admin_user_history(uid: int, user: dict = Depends(current_admin)):
+    """Полная история юзера: подписки на практики со стриками, программы,
+    последние 60 дней отметок."""
+    with db() as c:
+        u = c.execute(
+            "SELECT user_id, username, first_name, tz, created_at, last_seen FROM users WHERE user_id=?",
+            (uid,),
+        ).fetchone()
+        if not u:
+            raise HTTPException(404, "Пользователь не найден")
+        tz = _safe_tz(u["tz"]) or TZ
+        today_d = datetime.now(tz).date()
+        today_iso = today_d.isoformat()
+
+        # Подписки на практики (активные и истёкшие)
+        subs = c.execute(
+            """SELECT up.practice_id, up.period_type, up.period_start, up.period_end, up.joined_at,
+                      p.name, p.icon, p.palette, p.type, p.target, p.unit
+               FROM user_practices up
+               JOIN practices p ON p.id = up.practice_id
+               WHERE up.user_id = ?
+               ORDER BY up.joined_at DESC""",
+            (uid,),
+        ).fetchall()
+        # Все done-даты по каждой практике для стриков и счётчика
+        done_by_practice: dict = {}
+        last_done_by_practice: dict = {}
+        done_rows = c.execute(
+            """SELECT e.practice_id, e.date FROM entries e
+               JOIN practices p ON p.id = e.practice_id
+               WHERE e.user_id = ?
+                 AND ((p.type='binary' AND e.completed=1)
+                      OR (p.type='count' AND e.count >= COALESCE(p.target,1)))""",
+            (uid,),
+        ).fetchall()
+        for r in done_rows:
+            done_by_practice.setdefault(r["practice_id"], set()).add(r["date"])
+            prev = last_done_by_practice.get(r["practice_id"])
+            if not prev or r["date"] > prev:
+                last_done_by_practice[r["practice_id"]] = r["date"]
+
+        practices = []
+        for s in subs:
+            pid = s["practice_id"]
+            cur, best = compute_streaks(done_by_practice.get(pid, set()), today_d)
+            is_active = (not s["period_end"]) or s["period_end"] >= today_iso
+            practices.append({
+                "id": pid,
+                "name": s["name"],
+                "icon": s["icon"] or "✨",
+                "palette": s["palette"] or "amber",
+                "type": s["type"],
+                "target": s["target"],
+                "unit": s["unit"] or "",
+                "period_type": s["period_type"],
+                "period_start": s["period_start"],
+                "period_end": s["period_end"],
+                "joined_at": s["joined_at"],
+                "is_active": is_active,
+                "current_streak": cur,
+                "best_streak": best,
+                "total_done_days": len(done_by_practice.get(pid, set())),
+                "last_done_date": last_done_by_practice.get(pid),
+            })
+
+        # Программы (активные и завершённые)
+        user_progs = c.execute(
+            "SELECT program_id FROM user_programs WHERE user_id=? ORDER BY joined_at DESC",
+            (uid,),
+        ).fetchall()
+        programs_state = [
+            s for s in (_user_program_state(c, uid, r["program_id"]) for r in user_progs)
+            if s is not None
+        ]
+
+        # Последние 60 дней отметок
+        entries_rows = c.execute(
+            """SELECT e.date, e.practice_id, e.completed, e.count, e.ts,
+                      p.name AS practice_name, p.icon, p.type, p.target, p.unit
+               FROM entries e
+               JOIN practices p ON p.id = e.practice_id
+               WHERE e.user_id = ? AND e.date >= date(?, '-60 days')
+               ORDER BY e.date DESC, e.ts DESC""",
+            (uid, today_iso),
+        ).fetchall()
+        entries = [{
+            "date": r["date"],
+            "practice_id": r["practice_id"],
+            "practice_name": r["practice_name"],
+            "practice_icon": r["icon"] or "✨",
+            "practice_type": r["type"],
+            "practice_target": r["target"],
+            "practice_unit": r["unit"] or "",
+            "completed": bool(r["completed"]),
+            "count": r["count"] or 0,
+            "ts": r["ts"],
+        } for r in entries_rows]
+
+    return {
+        "user": dict(u),
+        "today": today_iso,
+        "practices": practices,
+        "programs": programs_state,
+        "entries": entries,
+    }
+
+
 # ─── ПРОГРАММЫ: API ────────────────────────────────────────────────────────
 
 def _validate_program_levels(c, levels: list[ProgramLevelIn]):

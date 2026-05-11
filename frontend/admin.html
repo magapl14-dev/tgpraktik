@@ -100,6 +100,7 @@ function App() {
   const [editing, setEditing] = useState(null);
   const [editingProgram, setEditingProgram] = useState(null);
   const [assigningUser, setAssigningUser] = useState(null);
+  const [historyUser, setHistoryUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
@@ -176,11 +177,14 @@ function App() {
       {tab === 'programs' && <ProgramsList programs={programs} onEdit={setEditingProgram} onCreate={() => setEditingProgram({})} onChange={refresh}/>}
       {tab === 'motivations' && <MotivationsTab practices={practices} programs={programs}/>}
       {tab === 'categories' && <CategoriesTab categories={categories} onChange={refresh}/>}
-      {tab === 'users' && <UsersList users={users} onAssign={setAssigningUser}/>}
+      {tab === 'users' && <UsersList users={users} onAssign={setAssigningUser} onHistory={setHistoryUser}/>}
 
       {assigningUser && (
         <AssignmentsModal user={assigningUser} practices={practices} programs={programs}
           onClose={() => setAssigningUser(null)}/>
+      )}
+      {historyUser && (
+        <UserHistoryModal user={historyUser} onClose={() => setHistoryUser(null)}/>
       )}
     </div>
   );
@@ -373,12 +377,12 @@ function CategoryAddInput({ onCancel, onSave }) {
   );
 }
 
-function UsersList({ users, onAssign }) {
+function UsersList({ users, onAssign, onHistory }) {
   if (users.length === 0) return <p className="opacity-50 text-center py-12 text-sm">Загружаем...</p>;
   return (
     <div className="space-y-2">
       {users.map((u) => (
-        <div key={u.user_id} className="card rounded-xl p-3 flex items-center gap-3">
+        <div key={u.user_id} className="card rounded-xl p-3 flex items-center gap-3 flex-wrap">
           <div className="w-10 h-10 rounded-full flex items-center justify-center font-medium" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>
             {(u.first_name || '?')[0]}
           </div>
@@ -390,6 +394,8 @@ function UsersList({ users, onAssign }) {
             <div>{u.active_practices} акт.</div>
             <div className="opacity-50">{u.total_entries} отметок</div>
           </div>
+          <button onClick={() => onHistory(u)} className="px-3 py-1.5 text-sm rounded-full whitespace-nowrap"
+            style={{border:'1px solid rgba(244,234,213,0.15)'}}>История</button>
           <button onClick={() => onAssign(u)} className="px-3 py-1.5 text-sm rounded-full whitespace-nowrap"
             style={{border:'1px solid rgba(212,168,87,0.3)', color:'#d4a857'}}>Назначения</button>
         </div>
@@ -800,6 +806,146 @@ function AssignmentsModal({ user, practices, programs, onClose }) {
         </Field>
 
         <button onClick={onClose} className="w-full mt-4 py-3 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>Закрыть</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── История юзера ───
+function UserHistoryModal({ user, onClose }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    (async () => {
+      try { setData(await api(`/api/admin/users/${user.user_id}/history`)); }
+      catch (e) { setErr(e.message); }
+    })();
+  }, [user.user_id]);
+
+  const fmtTs = (ts) => {
+    if (!ts) return '';
+    try { return new Date(ts * 1000).toLocaleString('ru-RU'); } catch (e) { return ''; }
+  };
+  const fmtDate = (d) => {
+    try { return new Date(d + 'T00:00:00').toLocaleDateString('ru-RU', { day:'numeric', month:'short' }); }
+    catch (e) { return d; }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={onClose}>
+      <div className="card rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-1">
+          <h3 className="font-display text-xl">История</h3>
+          <button onClick={onClose} className="opacity-60 text-xl leading-none">×</button>
+        </div>
+        <p className="opacity-60 text-sm mb-4">
+          {user.first_name || 'Без имени'} {user.username ? `@${user.username}` : ''} <span className="opacity-60">· id {user.user_id}</span>
+        </p>
+
+        {err && <p className="text-sm py-4" style={{color:'#e88080'}}>{err}</p>}
+        {!data && !err && <p className="opacity-50 text-center py-8 text-sm">Загружаем...</p>}
+
+        {data && (
+          <>
+            {/* Активные программы */}
+            {(data.programs || []).length > 0 && (
+              <div className="mb-5">
+                <h4 className="font-display text-lg mb-2">Программы</h4>
+                <div className="space-y-2">
+                  {data.programs.map((pr) => {
+                    const total = pr.current_duration_days || 0;
+                    const pct = total ? Math.round((pr.level_completed_days || 0)/total*100) : 0;
+                    return (
+                      <div key={pr.program_id} className="rounded-lg p-3" style={{background:'rgba(244,234,213,0.04)'}}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xl">{pr.icon}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="font-medium truncate">{pr.name}</div>
+                            <div className="text-[11px] opacity-60">
+                              {pr.status === 'completed'
+                                ? <>Завершена</>
+                                : <>Уровень {pr.current_level} из {pr.total_levels} · {pr.current_practice_name || ''}</>}
+                            </div>
+                          </div>
+                        </div>
+                        {pr.status !== 'completed' && total > 0 && (
+                          <div className="mt-2">
+                            <div className="flex justify-between text-[10px] opacity-60 mb-1">
+                              <span>День {pr.level_completed_days} из {total}</span><span>{pct}%</span>
+                            </div>
+                            <div className="h-1 rounded-full overflow-hidden" style={{background:'rgba(244,234,213,0.08)'}}>
+                              <div className="h-full" style={{width:`${pct}%`, background:'linear-gradient(90deg, #d4a857, #e0bd6a)'}}/>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Подписки на практики */}
+            <div className="mb-5">
+              <h4 className="font-display text-lg mb-2">Практики ({(data.practices || []).length})</h4>
+              {(data.practices || []).length === 0 ? (
+                <p className="opacity-50 text-sm">Юзер не подписался ни на одну практику.</p>
+              ) : (
+                <div className="space-y-2">
+                  {data.practices.map((p) => (
+                    <div key={p.id} className="rounded-lg p-3" style={{background:'rgba(244,234,213,0.04)'}}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-lg">{p.icon}</span>
+                        <div className="flex-1 min-w-0 font-medium truncate">{p.name}</div>
+                        {p.is_active
+                          ? <span className="text-[10px] px-2 py-0.5 rounded-full" style={{background:'rgba(163,177,138,0.15)', color:'#a3b18a'}}>активна</span>
+                          : <span className="text-[10px] px-2 py-0.5 rounded-full opacity-60" style={{background:'rgba(244,234,213,0.06)'}}>истекла</span>}
+                      </div>
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-[11px] opacity-70">
+                        <div>стрик: <span style={{color:'#d4a857'}}>{p.current_streak}</span> · рекорд {p.best_streak}</div>
+                        <div>выполнено: {p.total_done_days} дн.</div>
+                        <div>последняя отм.: {p.last_done_date ? fmtDate(p.last_done_date) : '—'}</div>
+                        <div>период: {p.period_type}{p.period_end ? ` до ${fmtDate(p.period_end)}` : ''}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Журнал отметок */}
+            <div>
+              <h4 className="font-display text-lg mb-2">Отметки (последние 60 дней, {(data.entries || []).length})</h4>
+              {(data.entries || []).length === 0 ? (
+                <p className="opacity-50 text-sm">За последние 60 дней — ни одной отметки.</p>
+              ) : (
+                <div className="space-y-1 text-sm">
+                  {data.entries.map((e, i) => {
+                    const done = e.practice_type === 'binary'
+                      ? e.completed
+                      : e.count >= (e.practice_target || 1);
+                    return (
+                      <div key={i} className="rounded-md px-2 py-1.5 flex items-center gap-2" style={{background:'rgba(244,234,213,0.03)'}}>
+                        <span className="text-xs opacity-60 w-14 flex-shrink-0">{fmtDate(e.date)}</span>
+                        <span>{e.practice_icon}</span>
+                        <span className="flex-1 truncate opacity-90">{e.practice_name}</span>
+                        <span className="text-xs" style={{color: done ? '#a3b18a' : '#e0bd6a'}}>
+                          {e.practice_type === 'binary'
+                            ? (e.completed ? '✓ выполнено' : '— не закрыто')
+                            : `${e.count}${e.practice_unit ? ' ' + e.practice_unit : ''} / ${e.practice_target || 1}`}
+                        </span>
+                        <span className="text-[10px] opacity-40 hidden md:inline">{fmtTs(e.ts)}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        <button onClick={onClose} className="w-full mt-5 py-3 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>Закрыть</button>
       </div>
     </div>
   );
