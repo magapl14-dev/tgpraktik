@@ -690,7 +690,7 @@ function MotivationCreateModal({ target, onClose, onSaved }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={onClose}>
-      <div className="card rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-lg" onClick={(e) => e.stopPropagation()}>
+      <div className="rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-lg" style={{background:'#161824', border:'1px solid rgba(244,234,213,0.08)'}} onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display text-xl mb-4">Добавить мотивашки</h3>
         <Field label="Когда срабатывает">
           <div className="grid grid-cols-3 gap-2">
@@ -762,7 +762,7 @@ function AssignmentsModal({ user, practices, programs, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={onClose}>
-      <div className="card rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-lg" onClick={(e) => e.stopPropagation()}>
+      <div className="rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-lg" style={{background:'#161824', border:'1px solid rgba(244,234,213,0.08)'}} onClick={(e) => e.stopPropagation()}>
         <h3 className="font-display text-xl mb-1">Назначения</h3>
         <p className="opacity-60 text-sm mb-4">{user.first_name || 'Без имени'} {user.username ? `@${user.username}` : ''}</p>
 
@@ -834,7 +834,7 @@ function UserHistoryModal({ user, onClose }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={onClose}>
-      <div className="card rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+      <div className="rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-2xl max-h-[90vh] overflow-y-auto" style={{background:'#161824', border:'1px solid rgba(244,234,213,0.08)'}} onClick={(e) => e.stopPropagation()}>
         <div className="flex items-start justify-between mb-1">
           <h3 className="font-display text-xl">История</h3>
           <button onClick={onClose} className="opacity-60 text-xl leading-none">×</button>
