@@ -91,18 +91,22 @@ function App() {
   const [me, setMe] = useState(null);
   const [tab, setTab] = useState('practices');
   const [practices, setPractices] = useState([]);
+  const [programs, setPrograms] = useState([]);
   const [categories, setCategories] = useState([]);
   const [stats, setStats] = useState(null);
   const [users, setUsers] = useState([]);
   const [editing, setEditing] = useState(null);
+  const [editingProgram, setEditingProgram] = useState(null);
+  const [assigningUser, setAssigningUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
 
   const refresh = async () => {
-    const [m, p, s, cats] = await Promise.all([
-      api('/api/me'), api('/api/admin/practices'), api('/api/admin/stats'), api('/api/admin/categories')
+    const [m, p, s, cats, progs] = await Promise.all([
+      api('/api/me'), api('/api/admin/practices'), api('/api/admin/stats'),
+      api('/api/admin/categories'), api('/api/admin/programs')
     ]);
-    setMe(m); setPractices(p); setStats(s); setCategories(cats);
+    setMe(m); setPractices(p); setStats(s); setCategories(cats); setPrograms(progs);
   };
 
   useEffect(() => {
@@ -129,6 +133,12 @@ function App() {
     return <PracticeForm practice={editing} categories={categories} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await refresh(); }}/>;
   }
 
+  if (editingProgram !== null) {
+    return <ProgramForm program={editingProgram} practices={practices}
+      onClose={() => setEditingProgram(null)}
+      onSaved={async () => { setEditingProgram(null); await refresh(); }}/>;
+  }
+
   return (
     <div className="fade-in pt-6">
       <header className="mb-6 flex items-start justify-between">
@@ -149,7 +159,7 @@ function App() {
       )}
 
       <div className="flex gap-2 mb-4 flex-wrap">
-        {[['practices','Практики'],['categories','Категории'],['users','Пользователи']].map(([v,l]) => (
+        {[['practices','Практики'],['programs','Программы'],['motivations','Мотивашки'],['categories','Категории'],['users','Пользователи']].map(([v,l]) => (
           <button key={v} onClick={() => { setTab(v); if (v==='users' && !users.length) loadUsers(); }}
             className="px-4 py-1.5 rounded-full text-sm"
             style={{
@@ -161,8 +171,15 @@ function App() {
       </div>
 
       {tab === 'practices' && <PracticesList practices={practices} categories={categories} onEdit={setEditing} onCreate={() => setEditing({})} onChange={refresh}/>}
+      {tab === 'programs' && <ProgramsList programs={programs} onEdit={setEditingProgram} onCreate={() => setEditingProgram({})} onChange={refresh}/>}
+      {tab === 'motivations' && <MotivationsTab practices={practices} programs={programs}/>}
       {tab === 'categories' && <CategoriesTab categories={categories} onChange={refresh}/>}
-      {tab === 'users' && <UsersList users={users}/>}
+      {tab === 'users' && <UsersList users={users} onAssign={setAssigningUser}/>}
+
+      {assigningUser && (
+        <AssignmentsModal user={assigningUser} practices={practices} programs={programs}
+          onClose={() => setAssigningUser(null)}/>
+      )}
     </div>
   );
 }
@@ -354,7 +371,7 @@ function CategoryAddInput({ onCancel, onSave }) {
   );
 }
 
-function UsersList({ users }) {
+function UsersList({ users, onAssign }) {
   if (users.length === 0) return <p className="opacity-50 text-center py-12 text-sm">Загружаем...</p>;
   return (
     <div className="space-y-2">
@@ -371,8 +388,417 @@ function UsersList({ users }) {
             <div>{u.active_practices} акт.</div>
             <div className="opacity-50">{u.total_entries} отметок</div>
           </div>
+          <button onClick={() => onAssign(u)} className="px-3 py-1.5 text-sm rounded-full whitespace-nowrap"
+            style={{border:'1px solid rgba(212,168,87,0.3)', color:'#d4a857'}}>Назначения</button>
         </div>
       ))}
+    </div>
+  );
+}
+
+// ─── Программы ───
+function ProgramsList({ programs, onEdit, onCreate, onChange }) {
+  const remove = async (p) => {
+    if (!confirm(`Удалить программу «${p.name}»? Подписки юзеров на эту программу удалятся.`)) return;
+    await api(`/api/admin/programs/${p.id}`, { method:'DELETE' });
+    await onChange();
+  };
+  return (
+    <div>
+      <button onClick={onCreate}
+        className="w-full mb-4 py-3 rounded-full font-medium flex items-center justify-center gap-2"
+        style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+        <span style={{fontSize:'20px', lineHeight:0}}>+</span> Создать программу
+      </button>
+      {programs.length === 0 && <p className="opacity-50 text-center py-12 text-sm">Программ ещё нет. Программа — это последовательность практик с длительностями каждого уровня.</p>}
+      <div className="space-y-2">
+        {programs.map((p) => {
+          const palette = PALETTES.find(x => x.n === p.palette) || PALETTES[1];
+          return (
+            <div key={p.id} className="card rounded-xl p-3 flex items-center gap-3">
+              <div className="w-12 h-12 rounded-lg flex items-center justify-center text-2xl flex-shrink-0"
+                   style={{background: palette.bg, border:`1px solid ${palette.a}33`}}>{p.icon}</div>
+              <div className="flex-1 min-w-0">
+                <div className="font-display text-lg leading-tight truncate">{p.name}</div>
+                <div className="text-xs opacity-60 flex items-center gap-2 flex-wrap">
+                  <span>{p.total_levels} уровн.</span>
+                  <span>•</span>
+                  <span>{p.on_miss === 'reset' ? 'сброс при пропуске' : 'продолжение при пропуске'}</span>
+                  <span>•</span>
+                  <span>{p.visibility === 'public' ? 'в каталоге' : 'индивидуально'}</span>
+                  {!p.active && <><span>•</span><span style={{color:'#e88080'}}>выключена</span></>}
+                </div>
+              </div>
+              <button onClick={() => onEdit(p)} className="px-3 py-1.5 text-sm rounded-full"
+                style={{border:'1px solid rgba(244,234,213,0.15)'}}>Изм.</button>
+              <button onClick={() => remove(p)} className="px-3 py-1.5 text-sm rounded-full"
+                style={{border:'1px solid rgba(232,128,128,0.3)', color:'#e88080'}}>Удалить</button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ProgramForm({ program, practices, onClose, onSaved }) {
+  const isNew = !program.id;
+  const [v, setV] = useState({
+    name: program.name || '',
+    description: program.description || '',
+    icon: program.icon || '🎯',
+    palette: program.palette || 'amber',
+    on_miss: program.on_miss || 'reset',
+    visibility: program.visibility || 'public',
+    active: program.active !== false,
+    levels: (program.levels || []).map(l => ({
+      practice_id: l.practice_id,
+      duration_days: l.duration_days,
+    })),
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k, val) => setV((s) => ({...s, [k]: val}));
+  const updateLevel = (i, patch) => set('levels', v.levels.map((l, j) => j === i ? {...l, ...patch} : l));
+  const addLevel = () => set('levels', [...v.levels, { practice_id: practices[0]?.id || '', duration_days: 7 }]);
+  const removeLevel = (i) => set('levels', v.levels.filter((_, j) => j !== i));
+  const moveLevel = (i, dir) => {
+    const j = i + dir;
+    if (j < 0 || j >= v.levels.length) return;
+    const arr = [...v.levels]; [arr[i], arr[j]] = [arr[j], arr[i]];
+    set('levels', arr);
+  };
+
+  const save = async () => {
+    if (!v.name.trim() || v.levels.length === 0) return;
+    setSaving(true);
+    try {
+      const body = JSON.stringify({
+        ...v,
+        levels: v.levels.map(l => ({ practice_id: l.practice_id, duration_days: parseInt(l.duration_days) || 1 })),
+      });
+      if (isNew) await api('/api/admin/programs', { method:'POST', body });
+      else await api(`/api/admin/programs/${program.id}`, { method:'PUT', body });
+      await onSaved();
+    } catch (e) { alert(e.message); setSaving(false); }
+  };
+
+  return (
+    <div className="fade-in pt-6 pb-8">
+      <header className="flex items-center justify-between mb-6">
+        <button onClick={onClose} className="opacity-60 text-sm">← Назад</button>
+        <h2 className="font-display text-2xl">{isNew ? 'Новая программа' : 'Изменить'}</h2>
+        <div className="w-12"/>
+      </header>
+
+      <div className="space-y-5">
+        <Field label="Название">
+          <input type="text" value={v.name} onChange={(e) => set('name', e.target.value)} autoFocus={isNew}
+            placeholder="40 дней дисциплины" className="input-field w-full px-4 py-3 rounded-xl font-display text-xl"/>
+        </Field>
+
+        <Field label="Описание">
+          <textarea value={v.description} onChange={(e) => set('description', e.target.value)} rows={3}
+            placeholder="О чём программа, для кого, какой результат..." className="input-field w-full px-4 py-3 rounded-xl resize-none"/>
+        </Field>
+
+        <Field label="Символ">
+          <div className="flex gap-1.5 overflow-x-auto pb-1 scrollbar-hide">
+            {ICONS.map((i) => (
+              <button key={i} onClick={() => set('icon', i)}
+                className="flex-shrink-0 w-10 h-10 rounded-lg text-xl flex items-center justify-center"
+                style={{
+                  background: v.icon === i ? 'rgba(212,168,87,0.2)' : 'rgba(244,234,213,0.04)',
+                  border: `1px solid ${v.icon === i ? 'rgba(212,168,87,0.5)' : 'rgba(244,234,213,0.08)'}`,
+                }}>{i}</button>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="Цвет">
+          <div className="flex gap-2 flex-wrap">
+            {PALETTES.map((p) => (
+              <button key={p.n} onClick={() => set('palette', p.n)} className="w-8 h-8 rounded-full"
+                style={{background: p.bg, border: `2px solid ${v.palette === p.n ? p.a : 'transparent'}`}}/>
+            ))}
+          </div>
+        </Field>
+
+        <Field label="При пропуске дня">
+          <div className="grid grid-cols-2 gap-2">
+            <TypeBtn active={v.on_miss==='reset'} onClick={() => set('on_miss','reset')} title="Сбросить" sub="Уровень начинается заново"/>
+            <TypeBtn active={v.on_miss==='continue'} onClick={() => set('on_miss','continue')} title="Продолжить" sub="Засчитываем только закрытые дни"/>
+          </div>
+        </Field>
+
+        <Field label="Видимость">
+          <div className="grid grid-cols-2 gap-2">
+            <TypeBtn active={v.visibility==='public'} onClick={() => set('visibility','public')} title="Публичная" sub="Видна всем в каталоге"/>
+            <TypeBtn active={v.visibility==='individual'} onClick={() => set('visibility','individual')} title="Индивидуальная" sub="Только тем, кому назначена"/>
+          </div>
+        </Field>
+
+        <div className="card rounded-xl p-4">
+          <div className="flex items-center justify-between mb-3">
+            <div className="text-xs uppercase tracking-wider opacity-50">Уровни</div>
+            <button onClick={addLevel} className="text-xs px-3 py-1 rounded-full"
+              style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>+ уровень</button>
+          </div>
+          {v.levels.length === 0 && <p className="opacity-50 text-xs">Добавь хотя бы один уровень.</p>}
+          <div className="space-y-2">
+            {v.levels.map((lvl, i) => (
+              <div key={i} className="rounded-lg p-2 flex items-center gap-2" style={{background:'rgba(244,234,213,0.03)'}}>
+                <div className="text-xs opacity-50 w-6 text-center">L{i+1}</div>
+                <select value={lvl.practice_id} onChange={(e) => updateLevel(i, { practice_id: e.target.value })}
+                  className="input-field flex-1 px-2 py-1.5 rounded text-sm">
+                  <option value="">— выбери практику —</option>
+                  {practices.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <input type="number" min="1" value={lvl.duration_days}
+                  onChange={(e) => updateLevel(i, { duration_days: e.target.value })}
+                  className="input-field w-16 px-2 py-1.5 rounded text-sm text-center" title="дней"/>
+                <span className="text-xs opacity-50">дн.</span>
+                <button onClick={() => moveLevel(i, -1)} disabled={i===0} className="w-6 h-6 rounded opacity-60 disabled:opacity-20">↑</button>
+                <button onClick={() => moveLevel(i, +1)} disabled={i===v.levels.length-1} className="w-6 h-6 rounded opacity-60 disabled:opacity-20">↓</button>
+                <button onClick={() => removeLevel(i)} className="w-6 h-6 rounded opacity-60" style={{color:'#e88080'}}>×</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" checked={v.active} onChange={(e) => set('active', e.target.checked)} className="w-5 h-5"/>
+          <span>Активна</span>
+        </label>
+
+        <div className="flex gap-3 pt-2">
+          <button onClick={onClose} className="flex-1 py-3.5 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>Отмена</button>
+          <button onClick={save} disabled={!v.name.trim() || v.levels.length===0 || saving}
+            className="flex-[2] py-3.5 rounded-full font-medium disabled:opacity-50"
+            style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+            {saving ? 'Сохраняем...' : isNew ? 'Создать' : 'Сохранить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Мотивашки ───
+function MotivationsTab({ practices, programs }) {
+  const [target, setTarget] = useState(''); // 'practice:<id>' or 'program:<id>'
+  const [items, setItems] = useState([]);
+  const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState('');
+
+  const load = async () => {
+    setErr('');
+    if (!target) { setItems([]); return; }
+    const [kind, id] = target.split(':');
+    const q = kind === 'practice' ? `practice_id=${id}` : `program_id=${id}`;
+    try { setItems(await api(`/api/admin/motivations?${q}`)); }
+    catch (e) { setErr(e.message); }
+  };
+  useEffect(() => { load(); }, [target]);
+
+  const remove = async (id) => {
+    if (!confirm('Удалить эту мотивашку?')) return;
+    await api(`/api/admin/motivations/${id}`, { method:'DELETE' });
+    await load();
+  };
+
+  return (
+    <div>
+      <p className="opacity-60 text-sm mb-4">Тексты, которые бот шлёт юзеру в моменты: старт практики/программы, достижение стрика на N дней, пропуск N дней подряд.</p>
+      <Field label="Цель">
+        <select value={target} onChange={(e) => setTarget(e.target.value)}
+          className="input-field w-full px-4 py-3 rounded-xl">
+          <option value="">— выбери практику или программу —</option>
+          <optgroup label="Практики">
+            {practices.map(p => <option key={p.id} value={`practice:${p.id}`}>{p.name}</option>)}
+          </optgroup>
+          <optgroup label="Программы">
+            {programs.map(p => <option key={p.id} value={`program:${p.id}`}>{p.name}</option>)}
+          </optgroup>
+        </select>
+      </Field>
+
+      {target && (
+        <>
+          <button onClick={() => setCreating(true)}
+            className="w-full my-4 py-3 rounded-full font-medium"
+            style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+            + Добавить мотивашки
+          </button>
+
+          {err && <p className="text-sm mb-3" style={{color:'#e88080'}}>{err}</p>}
+
+          {items.length === 0 ? (
+            <p className="opacity-50 text-center py-8 text-sm">Пока ни одной. Добавь — бот будет выбирать случайную из подходящих.</p>
+          ) : (
+            <div className="space-y-2">
+              {items.map((m) => (
+                <div key={m.id} className="card rounded-xl p-3 flex items-start gap-3">
+                  <div className="text-xs uppercase tracking-wider opacity-60 flex-shrink-0 pt-0.5">
+                    {m.kind === 'start' ? 'старт' : m.kind === 'streak' ? `стрик ${m.value}` : `пропуск ${m.value}`}
+                  </div>
+                  <div className="flex-1 text-sm whitespace-pre-wrap">{m.text}</div>
+                  <button onClick={() => remove(m.id)} className="text-xs opacity-60" style={{color:'#e88080'}}>×</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </>
+      )}
+
+      {creating && (
+        <MotivationCreateModal target={target} onClose={() => setCreating(false)} onSaved={async () => { setCreating(false); await load(); }}/>
+      )}
+    </div>
+  );
+}
+
+function MotivationCreateModal({ target, onClose, onSaved }) {
+  const [kind, setKind] = useState('start');
+  const [value, setValue] = useState(7);
+  const [texts, setTexts] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    const lines = texts.split('\n').map(t => t.trim()).filter(Boolean);
+    if (lines.length === 0) return;
+    setSaving(true);
+    try {
+      const [scopeKind, scopeId] = target.split(':');
+      const body = JSON.stringify({
+        [scopeKind === 'practice' ? 'practice_id' : 'program_id']: scopeId,
+        kind,
+        value: kind === 'start' ? 0 : parseInt(value) || 0,
+        texts: lines,
+      });
+      await api('/api/admin/motivations/bulk', { method:'POST', body });
+      await onSaved();
+    } catch (e) { alert(e.message); setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={onClose}>
+      <div className="card rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display text-xl mb-4">Добавить мотивашки</h3>
+        <Field label="Когда срабатывает">
+          <div className="grid grid-cols-3 gap-2">
+            {['start','streak','miss'].map(k => (
+              <button key={k} onClick={() => setKind(k)} className="py-2 rounded-lg text-sm"
+                style={{
+                  background: kind===k ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+                  border: `1px solid ${kind===k ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.08)'}`,
+                  color: kind===k ? '#d4a857' : '#f4ead5',
+                }}>{k === 'start' ? 'Старт' : k === 'streak' ? 'Стрик' : 'Пропуск'}</button>
+            ))}
+          </div>
+        </Field>
+        {kind !== 'start' && (
+          <Field label={`Число дней ${kind==='streak' ? '(стрик равен этому)' : '(пропусков подряд)'}`}>
+            <input type="number" min="1" value={value} onChange={(e) => setValue(e.target.value)}
+              className="input-field w-full px-4 py-3 rounded-xl"/>
+          </Field>
+        )}
+        <Field label="Тексты (по одному на строку — бот выберет случайный)">
+          <textarea value={texts} onChange={(e) => setTexts(e.target.value)} rows={8}
+            placeholder={"Молодец, что начал!\nГлавное — не останавливаться.\nДень за днём.\n..."}
+            className="input-field w-full px-4 py-3 rounded-xl resize-none font-mono text-sm"/>
+        </Field>
+        <div className="flex gap-3 pt-3">
+          <button onClick={onClose} className="flex-1 py-3 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>Отмена</button>
+          <button onClick={save} disabled={saving || !texts.trim()}
+            className="flex-[2] py-3 rounded-full font-medium disabled:opacity-50"
+            style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+            {saving ? 'Сохраняем...' : 'Добавить'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Назначения ───
+function AssignmentsModal({ user, practices, programs, onClose }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [target, setTarget] = useState('');
+
+  const load = async () => {
+    setLoading(true);
+    try { setItems(await api(`/api/admin/users/${user.user_id}/assignments`)); }
+    finally { setLoading(false); }
+  };
+  useEffect(() => { load(); }, []);
+
+  const add = async () => {
+    if (!target) return;
+    const [target_type, target_id] = target.split(':');
+    try {
+      await api(`/api/admin/users/${user.user_id}/assignments`, {
+        method:'POST', body: JSON.stringify({ target_type, target_id })
+      });
+      setTarget('');
+      await load();
+    } catch (e) { alert(e.message); }
+  };
+
+  const remove = async (it) => {
+    if (!confirm(`Снять назначение «${it.target_name}»?`)) return;
+    await api(`/api/admin/users/${user.user_id}/assignments/${it.target_type}/${it.target_id}`,
+      { method:'DELETE' });
+    await load();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={onClose}>
+      <div className="card rounded-t-3xl md:rounded-3xl p-5 w-full md:max-w-lg" onClick={(e) => e.stopPropagation()}>
+        <h3 className="font-display text-xl mb-1">Назначения</h3>
+        <p className="opacity-60 text-sm mb-4">{user.first_name || 'Без имени'} {user.username ? `@${user.username}` : ''}</p>
+
+        {loading ? <p className="opacity-50 text-center py-4 text-sm">Загружаем...</p> : (
+          items.length === 0 ? <p className="opacity-50 text-sm">Назначений нет.</p> : (
+            <div className="space-y-2 mb-4">
+              {items.map((it) => (
+                <div key={`${it.target_type}:${it.target_id}`} className="rounded-lg p-2 flex items-center gap-3" style={{background:'rgba(244,234,213,0.04)'}}>
+                  <div className="text-xs uppercase opacity-60">{it.target_type === 'practice' ? 'практ.' : 'прогр.'}</div>
+                  <div className="flex-1 text-sm">{it.target_name || it.target_id}</div>
+                  <button onClick={() => remove(it)} className="opacity-60" style={{color:'#e88080'}}>×</button>
+                </div>
+              ))}
+            </div>
+          )
+        )}
+
+        <Field label="Назначить ещё">
+          <div className="flex gap-2">
+            <select value={target} onChange={(e) => setTarget(e.target.value)}
+              className="input-field flex-1 px-3 py-2 rounded-lg text-sm">
+              <option value="">— выбери —</option>
+              <optgroup label="Практики (скрытые из каталога)">
+                {practices.filter(p => p.catalog_hidden).map(p => (
+                  <option key={p.id} value={`practice:${p.id}`}>{p.name}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Практики (видны всем)">
+                {practices.filter(p => !p.catalog_hidden).map(p => (
+                  <option key={p.id} value={`practice:${p.id}`}>{p.name}</option>
+                ))}
+              </optgroup>
+              <optgroup label="Программы">
+                {programs.map(p => <option key={p.id} value={`program:${p.id}`}>{p.name}</option>)}
+              </optgroup>
+            </select>
+            <button onClick={add} disabled={!target}
+              className="px-4 py-2 rounded-lg disabled:opacity-50"
+              style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>+</button>
+          </div>
+        </Field>
+
+        <button onClick={onClose} className="w-full mt-4 py-3 rounded-full" style={{border:'1px solid rgba(244,234,213,0.15)'}}>Закрыть</button>
+      </div>
     </div>
   );
 }
@@ -394,6 +820,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     reminder_from: practice.reminder_from || '08:00',
     reminder_to: practice.reminder_to || '21:00',
     active: practice.active !== false,
+    catalog_hidden: practice.catalog_hidden === true,
     category_ids: practice.category_ids || [],
   });
   const [saving, setSaving] = useState(false);
@@ -525,6 +952,11 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
         <label className="flex items-center gap-3 cursor-pointer">
           <input type="checkbox" checked={v.active} onChange={(e) => set('active', e.target.checked)} className="w-5 h-5"/>
           <span>Активна (показывать в каталоге)</span>
+        </label>
+
+        <label className="flex items-center gap-3 cursor-pointer">
+          <input type="checkbox" checked={v.catalog_hidden} onChange={(e) => set('catalog_hidden', e.target.checked)} className="w-5 h-5"/>
+          <span>Скрыть из общего каталога <span className="opacity-50 text-xs">(только как уровень программы или по индив. назначению)</span></span>
         </label>
 
         <div className="flex gap-3 pt-2">
