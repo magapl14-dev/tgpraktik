@@ -1,0 +1,167 @@
+### Готовые запросы для отладки. Открой в VS Code с расширением "REST Client",
+### нажми "Send Request" над любым блоком — ответ появится в соседней вкладке.
+
+@host = https://practic.duckdns.org
+# @host = http://localhost:8000
+
+### --- Публичные ручки (без авторизации) ---
+
+### Healthcheck — должен ответить { ok: true, ts: "..." }
+GET {{host}}/healthz
+
+### Конфиг для TG Login Widget
+GET {{host}}/api/auth/config
+
+### Лендинг (HTML)
+GET {{host}}/landing
+
+### Корень — лендинг
+GET {{host}}/
+
+### Login-страница
+GET {{host}}/login
+
+### Manifest PWA
+GET {{host}}/manifest.webmanifest
+
+### Service Worker
+GET {{host}}/sw.js
+
+
+### --- Защищённые (нужна авторизация) ---
+### Чтобы посмотреть как «залогиненный» — открой /login в браузере, войди через TG,
+### потом из DevTools (F12 → Application → Cookies) скопируй значение cookie "session"
+### и подставь сюда:
+@session = ВСТАВЬ_СЮДА
+
+### Кто я — должен вернуть {id, name, is_admin, tz, ...}
+GET {{host}}/api/me
+Cookie: session={{session}}
+
+### Все мои данные: практики, история, стрики
+GET {{host}}/api/my
+Cookie: session={{session}}
+
+### Все категории
+GET {{host}}/api/categories
+Cookie: session={{session}}
+
+### Каталог практик
+GET {{host}}/api/practices
+Cookie: session={{session}}
+
+### Каталог по категории (включая потомков)
+GET {{host}}/api/practices?category_id=cat_demo_health
+Cookie: session={{session}}
+
+### Рейтинг за месяц
+GET {{host}}/api/leaderboard?period=month
+Cookie: session={{session}}
+
+
+### --- Админские ручки (только для ADMIN_IDS) ---
+
+### Статистика
+GET {{host}}/api/admin/stats
+Cookie: session={{session}}
+
+### Все категории с числом практик
+GET {{host}}/api/admin/categories
+Cookie: session={{session}}
+
+### Список юзеров
+GET {{host}}/api/admin/users
+Cookie: session={{session}}
+
+### Принудительная заливка демо-данных (если случайно удалил)
+POST {{host}}/api/admin/seed_demo
+Cookie: session={{session}}
+
+
+### --- Действия с практиками ---
+
+### Записать выполнение (или снять отметку — completed=false)
+POST {{host}}/api/my/entry
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "practice_id": "p_demo_meditation",
+  "completed": true
+}
+
+### Записать количество (для count-практики)
+POST {{host}}/api/my/entry
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "practice_id": "p_demo_run",
+  "count": 3
+}
+
+### Отметить вчерашний день
+POST {{host}}/api/my/entry
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "practice_id": "p_demo_meditation",
+  "date": "2026-05-07",
+  "completed": true
+}
+
+### Присоединиться к практике на месяц
+POST {{host}}/api/my/join
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "practice_id": "p_demo_meditation",
+  "period_type": "month"
+}
+
+### Продлить подписку
+POST {{host}}/api/my/extend
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "practice_id": "p_demo_meditation",
+  "period_type": "month"
+}
+
+### Выйти из практики
+DELETE {{host}}/api/my/leave/p_demo_meditation
+Cookie: session={{session}}
+
+
+### --- Настройки юзера ---
+
+### Получить настройки (tz, mute_until)
+GET {{host}}/api/me/settings
+Cookie: session={{session}}
+
+### Поменять часовой пояс
+PUT {{host}}/api/me/settings
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "tz": "Europe/Moscow"
+}
+
+### Снять паузу напоминаний
+PUT {{host}}/api/me/settings
+Content-Type: application/json
+Cookie: session={{session}}
+
+{
+  "mute_until": 0
+}
+
+
+### --- Логаут ---
+
+POST {{host}}/api/auth/logout
+Cookie: session={{session}}
