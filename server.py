@@ -21,6 +21,7 @@
 import os
 import json
 import hmac
+import random
 import hashlib
 import sqlite3
 import asyncio
@@ -82,23 +83,24 @@ CREATE TABLE IF NOT EXISTS users (
 );
 
 CREATE TABLE IF NOT EXISTS practices (
-  id            TEXT PRIMARY KEY,
-  name          TEXT NOT NULL,
-  description   TEXT,
-  type          TEXT NOT NULL,         -- 'binary' | 'count'
-  target        INTEGER,
-  unit          TEXT,
-  icon          TEXT,
-  palette       TEXT,
-  media_url     TEXT,
-  media_label   TEXT,
-  photo         TEXT,                  -- /photos/<id>.jpg или (легаси) data:...base64
-  max_reminders INTEGER DEFAULT 3,     -- сколько раз в день напоминать
-  reminder_from TEXT DEFAULT '08:00',  -- окно напоминаний начало
-  reminder_to   TEXT DEFAULT '21:00',  -- окно напоминаний конец
-  active        INTEGER DEFAULT 1,
-  created_at    TEXT NOT NULL,
-  created_by    INTEGER
+  id             TEXT PRIMARY KEY,
+  name           TEXT NOT NULL,
+  description    TEXT,
+  type           TEXT NOT NULL,         -- 'binary' | 'count'
+  target         INTEGER,
+  unit           TEXT,
+  icon           TEXT,
+  palette        TEXT,
+  media_url      TEXT,
+  media_label    TEXT,
+  photo          TEXT,                  -- /photos/<id>.jpg или (легаси) data:...base64
+  max_reminders  INTEGER DEFAULT 3,     -- сколько раз в день напоминать
+  reminder_from  TEXT DEFAULT '08:00',  -- окно напоминаний начало
+  reminder_to    TEXT DEFAULT '21:00',  -- окно напоминаний конец
+  active         INTEGER DEFAULT 1,
+  catalog_hidden INTEGER DEFAULT 0,     -- 1 = не показывать в общем каталоге (только как уровень программы или по индив. назначению)
+  created_at     TEXT NOT NULL,
+  created_by     INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS user_practices (
@@ -167,11 +169,83 @@ CREATE TABLE IF NOT EXISTS identities (
   FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS programs (
+  id           TEXT PRIMARY KEY,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  icon         TEXT,
+  palette      TEXT,
+  on_miss      TEXT NOT NULL DEFAULT 'reset',    -- 'reset' | 'continue' — что делать при пропущенном дне
+  visibility   TEXT NOT NULL DEFAULT 'public',   -- 'public' (в каталоге) | 'individual' (только назначенным)
+  active       INTEGER DEFAULT 1,
+  created_at   TEXT NOT NULL,
+  created_by   INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS program_levels (
+  program_id     TEXT NOT NULL,
+  level_order    INTEGER NOT NULL,    -- 1..N — порядок уровня внутри программы
+  practice_id    TEXT NOT NULL,       -- ссылка на существующую практику
+  duration_days  INTEGER NOT NULL,    -- сколько дней этот уровень идёт
+  PRIMARY KEY (program_id, level_order),
+  FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE,
+  FOREIGN KEY (practice_id) REFERENCES practices(id) ON DELETE RESTRICT
+);
+
+CREATE TABLE IF NOT EXISTS user_programs (
+  user_id              INTEGER NOT NULL,
+  program_id           TEXT NOT NULL,
+  current_level        INTEGER NOT NULL DEFAULT 1,    -- 1..N
+  level_started_at     TEXT NOT NULL,                  -- YYYY-MM-DD, дата начала текущего уровня
+  level_completed_days INTEGER NOT NULL DEFAULT 0,     -- сколько дней засчитано в текущем уровне (для on_miss='continue')
+  status               TEXT NOT NULL DEFAULT 'active', -- 'active' | 'completed'
+  joined_at            TEXT NOT NULL,
+  completed_at         TEXT,
+  PRIMARY KEY (user_id, program_id),
+  FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS motivations (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  practice_id TEXT,                  -- XOR с program_id: ровно одно поле должно быть заполнено
+  program_id  TEXT,
+  kind        TEXT NOT NULL,         -- 'start' | 'streak' | 'miss'
+  value       INTEGER NOT NULL DEFAULT 0,  -- для streak/miss — N дней; для start — 0
+  text        TEXT NOT NULL,
+  created_at  TEXT NOT NULL,
+  FOREIGN KEY (practice_id) REFERENCES practices(id) ON DELETE CASCADE,
+  FOREIGN KEY (program_id) REFERENCES programs(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS motivations_sent (
+  user_id     INTEGER NOT NULL,
+  scope_kind  TEXT NOT NULL,         -- 'practice' | 'program'
+  scope_id    TEXT NOT NULL,
+  kind        TEXT NOT NULL,         -- 'start' | 'streak' | 'miss'
+  value       INTEGER NOT NULL,
+  sent_date   TEXT NOT NULL,         -- YYYY-MM-DD по TZ юзера
+  PRIMARY KEY (user_id, scope_kind, scope_id, kind, value, sent_date)
+);
+
+CREATE TABLE IF NOT EXISTS user_assignments (
+  user_id      INTEGER NOT NULL,
+  target_type  TEXT NOT NULL,         -- 'practice' | 'program'
+  target_id    TEXT NOT NULL,
+  assigned_at  TEXT NOT NULL,
+  assigned_by  INTEGER,
+  PRIMARY KEY (user_id, target_type, target_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_entries_date ON entries(date);
 CREATE INDEX IF NOT EXISTS idx_user_practices_user ON user_practices(user_id);
 CREATE INDEX IF NOT EXISTS idx_categories_parent ON categories(parent_id);
 CREATE INDEX IF NOT EXISTS idx_practice_categories_cat ON practice_categories(category_id);
 CREATE INDEX IF NOT EXISTS idx_identities_user ON identities(user_id);
+CREATE INDEX IF NOT EXISTS idx_program_levels_program ON program_levels(program_id);
+CREATE INDEX IF NOT EXISTS idx_user_programs_user ON user_programs(user_id);
+CREATE INDEX IF NOT EXISTS idx_motivations_practice ON motivations(practice_id, kind, value);
+CREATE INDEX IF NOT EXISTS idx_motivations_program ON motivations(program_id, kind, value);
+CREATE INDEX IF NOT EXISTS idx_user_assignments_user ON user_assignments(user_id);
 """
 
 MAX_CATEGORY_LEVEL = 4
@@ -233,6 +307,7 @@ def init_db():
         _alter_safe(c, "ALTER TABLE users ADD COLUMN tz TEXT")
         _alter_safe(c, "ALTER TABLE users ADD COLUMN mute_until INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE user_practices ADD COLUMN period_end_notified INTEGER DEFAULT 0")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN catalog_hidden INTEGER DEFAULT 0")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -677,7 +752,49 @@ class PracticeIn(BaseModel):
     reminder_from: str = "08:00"
     reminder_to: str = "21:00"
     active: bool = True
+    catalog_hidden: bool = False
     category_ids: list[str] = Field(default_factory=list)
+
+
+class ProgramLevelIn(BaseModel):
+    practice_id: str
+    duration_days: int = Field(..., ge=1, le=365)
+
+
+class ProgramIn(BaseModel):
+    name: str
+    description: Optional[str] = ""
+    icon: Optional[str] = "🎯"
+    palette: Optional[str] = "amber"
+    on_miss: Literal["reset", "continue"] = "reset"
+    visibility: Literal["public", "individual"] = "public"
+    active: bool = True
+    levels: list[ProgramLevelIn] = Field(default_factory=list)
+
+
+class ProgramJoinIn(BaseModel):
+    program_id: str
+
+
+class MotivationIn(BaseModel):
+    practice_id: Optional[str] = None
+    program_id: Optional[str] = None
+    kind: Literal["start", "streak", "miss"]
+    value: int = Field(0, ge=0, le=10000)
+    text: str = Field(..., min_length=1)
+
+
+class MotivationBulkIn(BaseModel):
+    practice_id: Optional[str] = None
+    program_id: Optional[str] = None
+    kind: Literal["start", "streak", "miss"]
+    value: int = Field(0, ge=0, le=10000)
+    texts: list[str] = Field(..., min_length=1)
+
+
+class AssignmentIn(BaseModel):
+    target_type: Literal["practice", "program"]
+    target_id: str
 
 
 class CategoryIn(BaseModel):
@@ -834,6 +951,7 @@ def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
         "reminder_from": row["reminder_from"],
         "reminder_to": row["reminder_to"],
         "active": bool(row["active"]),
+        "catalog_hidden": bool(row["catalog_hidden"]) if "catalog_hidden" in row.keys() else False,
         "category_ids": category_ids or [],
     }
 
@@ -980,7 +1098,15 @@ def update_settings(body: SettingsIn, user: dict = Depends(current_user)):
 @app.get("/api/practices")
 def list_practices(category_id: Optional[str] = None,
                    user: dict = Depends(current_user)):
+    """Публичный каталог: только active=1.
+    Скрытые (catalog_hidden=1) — только если назначены юзеру через user_assignments."""
     with db() as c:
+        assigned_ids = {
+            r["target_id"] for r in c.execute(
+                "SELECT target_id FROM user_assignments WHERE user_id=? AND target_type='practice'",
+                (user["id"],),
+            ).fetchall()
+        }
         if category_id:
             cat_ids = _category_descendants(c, category_id)
             if not cat_ids:
@@ -995,6 +1121,7 @@ def list_practices(category_id: Optional[str] = None,
             ).fetchall()
         else:
             rows = c.execute("SELECT * FROM practices WHERE active=1 ORDER BY created_at DESC").fetchall()
+        rows = [r for r in rows if not r["catalog_hidden"] or r["id"] in assigned_ids]
         cat_map = _load_practice_categories(c, [r["id"] for r in rows])
     return [practice_to_dict(r, cat_map.get(r["id"], [])) for r in rows]
 
@@ -1017,6 +1144,9 @@ def my_data(user: dict = Depends(current_user)):
         tz = get_user_tz(user["id"], c)
         today_d = datetime.now(tz).date()
         today = today_d.isoformat()
+
+        # Подвинуть прогресс программ юзера (переходы уровней, сбросы) — lazily, на каждом /api/my.
+        _advance_user_programs(c, user["id"], today_d)
 
         ups = c.execute(
             """SELECT up.*, p.* FROM user_practices up
@@ -1108,6 +1238,17 @@ def my_data(user: dict = Depends(current_user)):
     full_streaks = compute_full_day_streaks(subs_for_streak, done_set, today_d)
     overall_cur, overall_best = compute_streaks(all_done_days, today_d)
 
+    # Подписки на программы (активные и завершённые) — для отображения на фронте.
+    with db() as c:
+        user_progs = c.execute(
+            "SELECT program_id FROM user_programs WHERE user_id=? ORDER BY joined_at DESC",
+            (user["id"],),
+        ).fetchall()
+        programs_state = [
+            s for s in (_user_program_state(c, user["id"], r["program_id"]) for r in user_progs)
+            if s is not None
+        ]
+
     return {
         "practices": practices,
         "history_practices": history_practices,
@@ -1119,6 +1260,7 @@ def my_data(user: dict = Depends(current_user)):
         "full_day_best": full_streaks["full_best"],
         "half_day_streak": full_streaks["half_current"],
         "half_day_best": full_streaks["half_best"],
+        "programs": programs_state,
     }
 
 
@@ -1130,6 +1272,295 @@ def _period_end_for(period_type: str, start_d: date) -> Optional[date]:
     return None  # forever
 
 
+# ─── ПРОГРАММЫ (многоуровневые практики) ───────────────────────────────────
+
+def _program_levels(c, program_id: str) -> list[dict]:
+    """Уровни программы по порядку. Возвращает список словарей с полями уровня + практики."""
+    rows = c.execute(
+        """SELECT pl.program_id, pl.level_order, pl.duration_days, pl.practice_id,
+                  p.name AS practice_name, p.type AS practice_type, p.target AS practice_target,
+                  p.icon AS practice_icon, p.palette AS practice_palette,
+                  p.description AS practice_description, p.unit AS practice_unit
+           FROM program_levels pl
+           JOIN practices p ON p.id = pl.practice_id
+           WHERE pl.program_id = ?
+           ORDER BY pl.level_order""",
+        (program_id,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def _practice_done_dates(c, user_id: int, practice_id: str,
+                         from_d: date, to_d: date) -> set:
+    """Вернёт set ISO-дат, когда юзер выполнил практику в диапазоне [from_d, to_d]."""
+    if from_d > to_d:
+        return set()
+    p = c.execute("SELECT type, target FROM practices WHERE id=?", (practice_id,)).fetchone()
+    if not p:
+        return set()
+    rows = c.execute(
+        """SELECT date, completed, count FROM entries
+           WHERE user_id=? AND practice_id=? AND date>=? AND date<=?""",
+        (user_id, practice_id, from_d.isoformat(), to_d.isoformat()),
+    ).fetchall()
+    done = set()
+    target = p["target"] or 1
+    for r in rows:
+        if p["type"] == "binary":
+            if r["completed"]:
+                done.add(r["date"])
+        else:
+            if (r["count"] or 0) >= target:
+                done.add(r["date"])
+    return done
+
+
+def _sync_program_user_practice(c, user_id: int, practice_id: str, start_d: date):
+    """При переходе на новый уровень — гарантируем активную подписку user_practices
+    на практику этого уровня (period_type='forever', period_start=сегодня, без конца)."""
+    c.execute(
+        """INSERT INTO user_practices (user_id, practice_id, period_type, period_start,
+                                       period_end, joined_at, period_end_notified)
+           VALUES (?, ?, 'forever', ?, NULL, ?, 0)
+           ON CONFLICT(user_id, practice_id) DO UPDATE SET
+             period_type='forever',
+             period_start=excluded.period_start,
+             period_end=NULL,
+             period_end_notified=0""",
+        (user_id, practice_id, start_d.isoformat(), datetime.now(TZ).isoformat()),
+    )
+
+
+def _advance_user_programs(c, user_id: int, today_d: date) -> list[dict]:
+    """Пересчитывает прогресс по всем активным программам юзера и применяет переходы уровней.
+    Возвращает список событий: [{program_id, kind, ...}], которые могут стрельнуть мотивашки
+    (пока используется только под этап 4 — на этапе 2 события не обрабатываются).
+
+    Логика:
+      - on_miss='reset': если в [level_started_at .. вчера] есть день без done — сброс уровня.
+        Иначе level_completed_days = подряд_done_дней_включая_сегодня.
+      - on_miss='continue': level_completed_days = общее_число_done_дней_в_уровне.
+      - Если completed_days >= duration_days → переход на следующий уровень (level_started_at=сегодня).
+      - Если уровней больше нет → status='completed'.
+    """
+    events: list[dict] = []
+    ups = c.execute(
+        """SELECT up.user_id, up.program_id, up.current_level, up.level_started_at,
+                  up.level_completed_days, p.on_miss, p.name AS program_name
+           FROM user_programs up
+           JOIN programs p ON p.id = up.program_id
+           WHERE up.user_id = ? AND up.status = 'active'""",
+        (user_id,),
+    ).fetchall()
+    for r in ups:
+        program_id = r["program_id"]
+        on_miss = r["on_miss"] or "reset"
+        current_level = r["current_level"]
+        level_started = date.fromisoformat(r["level_started_at"])
+        levels = _program_levels(c, program_id)
+        if not levels:
+            continue
+        max_level = max(l["level_order"] for l in levels)
+        # Может потребоваться несколько итераций (цепочка переходов в один день).
+        guard = 0
+        while guard < max_level + 2:
+            guard += 1
+            lvl = next((l for l in levels if l["level_order"] == current_level), None)
+            if lvl is None:
+                # уровня нет — программа завершена
+                c.execute(
+                    """UPDATE user_programs SET status='completed', completed_at=?
+                       WHERE user_id=? AND program_id=?""",
+                    (today_d.isoformat(), user_id, program_id),
+                )
+                events.append({"program_id": program_id, "kind": "program_completed"})
+                break
+            duration = lvl["duration_days"]
+            practice_id = lvl["practice_id"]
+            done = _practice_done_dates(c, user_id, practice_id, level_started, today_d)
+            yesterday = today_d - timedelta(days=1)
+
+            if on_miss == "reset":
+                # Считаем подряд от level_started до вчера (закрытые дни)
+                cur = level_started
+                streak = 0
+                broken = False
+                while cur <= yesterday:
+                    if cur.isoformat() in done:
+                        streak += 1
+                    else:
+                        broken = True
+                        break
+                    cur += timedelta(days=1)
+                if broken:
+                    # Сброс: новый старт = сегодня
+                    new_completed = 1 if today_d.isoformat() in done else 0
+                    c.execute(
+                        """UPDATE user_programs
+                           SET level_started_at=?, level_completed_days=?
+                           WHERE user_id=? AND program_id=?""",
+                        (today_d.isoformat(), new_completed, user_id, program_id),
+                    )
+                    level_started = today_d
+                    events.append({"program_id": program_id, "kind": "level_reset",
+                                   "level": current_level})
+                    break
+                completed = streak + (1 if today_d.isoformat() in done else 0)
+            else:  # continue: считаем все done-дни уровня (не обязательно подряд)
+                completed = len(done)
+
+            if completed >= duration:
+                # Переход на следующий уровень
+                current_level += 1
+                level_started = today_d
+                next_lvl = next((l for l in levels if l["level_order"] == current_level), None)
+                if next_lvl is None:
+                    c.execute(
+                        """UPDATE user_programs
+                           SET current_level=?, level_started_at=?, level_completed_days=0,
+                               status='completed', completed_at=?
+                           WHERE user_id=? AND program_id=?""",
+                        (current_level, level_started.isoformat(),
+                         today_d.isoformat(), user_id, program_id),
+                    )
+                    events.append({"program_id": program_id, "kind": "program_completed"})
+                    break
+                # Подписать юзера на новую практику-уровень
+                _sync_program_user_practice(c, user_id, next_lvl["practice_id"], today_d)
+                c.execute(
+                    """UPDATE user_programs
+                       SET current_level=?, level_started_at=?, level_completed_days=0
+                       WHERE user_id=? AND program_id=?""",
+                    (current_level, level_started.isoformat(), user_id, program_id),
+                )
+                events.append({"program_id": program_id, "kind": "level_up",
+                               "level": current_level})
+                # Повторим цикл — возможно сегодня уже отмечена новая практика
+                continue
+
+            # Без перехода — просто обновим level_completed_days
+            c.execute(
+                """UPDATE user_programs SET level_completed_days=?
+                   WHERE user_id=? AND program_id=?""",
+                (completed, user_id, program_id),
+            )
+            break
+    return events
+
+
+def _user_program_state(c, user_id: int, program_id: str) -> Optional[dict]:
+    """Снимок состояния юзерской программы для отдачи на фронт (после _advance)."""
+    up = c.execute(
+        """SELECT up.*, p.name, p.description, p.icon, p.palette, p.on_miss, p.visibility
+           FROM user_programs up
+           JOIN programs p ON p.id = up.program_id
+           WHERE up.user_id=? AND up.program_id=?""",
+        (user_id, program_id),
+    ).fetchone()
+    if not up:
+        return None
+    levels = _program_levels(c, program_id)
+    cur_lvl = next((l for l in levels if l["level_order"] == up["current_level"]), None)
+    return {
+        "program_id": program_id,
+        "name": up["name"],
+        "description": up["description"] or "",
+        "icon": up["icon"] or "🎯",
+        "palette": up["palette"] or "amber",
+        "on_miss": up["on_miss"],
+        "status": up["status"],
+        "current_level": up["current_level"],
+        "level_started_at": up["level_started_at"],
+        "level_completed_days": up["level_completed_days"],
+        "completed_at": up["completed_at"],
+        "joined_at": up["joined_at"],
+        "total_levels": len(levels),
+        "current_practice_id": cur_lvl["practice_id"] if cur_lvl else None,
+        "current_practice_name": cur_lvl["practice_name"] if cur_lvl else None,
+        "current_duration_days": cur_lvl["duration_days"] if cur_lvl else None,
+        "levels": [{
+            "level_order": l["level_order"],
+            "practice_id": l["practice_id"],
+            "practice_name": l["practice_name"],
+            "duration_days": l["duration_days"],
+        } for l in levels],
+    }
+
+
+def _program_to_dict(c, program_row, include_levels: bool = True) -> dict:
+    d = {
+        "id": program_row["id"],
+        "name": program_row["name"],
+        "description": program_row["description"] or "",
+        "icon": program_row["icon"] or "🎯",
+        "palette": program_row["palette"] or "amber",
+        "on_miss": program_row["on_miss"],
+        "visibility": program_row["visibility"],
+        "active": bool(program_row["active"]),
+        "created_at": program_row["created_at"],
+    }
+    if include_levels:
+        levels = _program_levels(c, program_row["id"])
+        d["levels"] = [{
+            "level_order": l["level_order"],
+            "practice_id": l["practice_id"],
+            "practice_name": l["practice_name"],
+            "practice_icon": l["practice_icon"] or "✨",
+            "duration_days": l["duration_days"],
+        } for l in levels]
+        d["total_levels"] = len(levels)
+    return d
+
+
+def _send_motivation(c, user_id: int, scope_kind: str, scope_id: str,
+                     kind: str, value: int, today_d: date) -> bool:
+    """Подбирает случайную мотивашку и отправляет юзеру в Telegram.
+    Дедуп — одна запись в motivations_sent на (user, scope, kind, value, дата).
+    Возвращает True, если отправили; False — если нечего слать или уже слали.
+
+    Вызывается из sync-роутов и фоновых задач. Bot.send_message планируется на
+    главный event loop через run_coroutine_threadsafe."""
+    # Дедуп: пробуем вставить — если конфликт, значит уже слали сегодня.
+    today_iso = today_d.isoformat()
+    try:
+        c.execute(
+            """INSERT INTO motivations_sent (user_id, scope_kind, scope_id, kind, value, sent_date)
+               VALUES (?,?,?,?,?,?)""",
+            (user_id, scope_kind, scope_id, kind, value, today_iso),
+        )
+    except sqlite3.IntegrityError:
+        return False  # уже отправляли
+
+    # Выбираем случайную мотивашку
+    target_col = "practice_id" if scope_kind == "practice" else "program_id"
+    rows = c.execute(
+        f"""SELECT text FROM motivations
+            WHERE {target_col}=? AND kind=? AND value=?""",
+        (scope_id, kind, value),
+    ).fetchall()
+    if not rows:
+        return False
+    text = random.choice([r["text"] for r in rows])
+
+    # Проверим, не на паузе ли юзер
+    u = c.execute("SELECT mute_until FROM users WHERE user_id=?", (user_id,)).fetchone()
+    if u and u["mute_until"] and u["mute_until"] > int(datetime.now(TZ).timestamp()):
+        return False
+
+    # Отправка — планируем на главный event loop
+    if not bot or not MAIN_LOOP:
+        return False
+    try:
+        asyncio.run_coroutine_threadsafe(
+            bot.send_message(user_id, text, reply_markup=webapp_kb("Открыть")),
+            MAIN_LOOP,
+        )
+    except Exception as e:
+        log.warning("send motivation to %s failed: %s", user_id, e)
+        return False
+    return True
+
+
 @app.post("/api/my/join")
 def join_practice(body: JoinIn, user: dict = Depends(current_user)):
     with db() as c:
@@ -1138,6 +1569,10 @@ def join_practice(body: JoinIn, user: dict = Depends(current_user)):
         practice = c.execute("SELECT id FROM practices WHERE id=? AND active=1", (body.practice_id,)).fetchone()
         if not practice:
             raise HTTPException(404, "Practice not found")
+        existing = c.execute(
+            "SELECT 1 FROM user_practices WHERE user_id=? AND practice_id=?",
+            (user["id"], body.practice_id),
+        ).fetchone()
         c.execute(
             """INSERT INTO user_practices (user_id, practice_id, period_type, period_start, period_end, joined_at, period_end_notified)
                VALUES (?,?,?,?,?,?,0)
@@ -1150,6 +1585,8 @@ def join_practice(body: JoinIn, user: dict = Depends(current_user)):
              today.isoformat(), end.isoformat() if end else None,
              datetime.now(TZ).isoformat()),
         )
+        if not existing:
+            _send_motivation(c, user["id"], "practice", body.practice_id, "start", 0, today)
     return {"ok": True}
 
 
@@ -1217,6 +1654,8 @@ def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
                      completed=excluded.completed, count=excluded.count, ts=excluded.ts""",
                 (user["id"], body.practice_id, target_date, completed, count, ts),
             )
+        # Подвинуть прогресс программ — переход уровня может стрельнуть прямо сейчас.
+        _advance_user_programs(c, user["id"], user_today_d(user["id"], c))
     return {"ok": True}
 
 
@@ -1452,12 +1891,14 @@ def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
         c.execute(
             """INSERT INTO practices
                (id, name, description, type, target, unit, icon, palette, media_url, media_label,
-                photo, max_reminders, reminder_from, reminder_to, active, created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
+                created_at, created_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, body.name, body.description, body.type, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
-             int(body.active), datetime.now(TZ).isoformat(), user["id"]),
+             int(body.active), int(body.catalog_hidden),
+             datetime.now(TZ).isoformat(), user["id"]),
         )
         _save_practice_categories(c, pid, body.category_ids)
     return {"id": pid}
@@ -1473,11 +1914,11 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
         c.execute(
             """UPDATE practices SET name=?, description=?, type=?, target=?, unit=?, icon=?,
                palette=?, media_url=?, media_label=?, photo=?, max_reminders=?,
-               reminder_from=?, reminder_to=?, active=? WHERE id=?""",
+               reminder_from=?, reminder_to=?, active=?, catalog_hidden=? WHERE id=?""",
             (body.name, body.description, body.type, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
-             int(body.active), pid),
+             int(body.active), int(body.catalog_hidden), pid),
         )
         _save_practice_categories(c, pid, body.category_ids)
     return {"ok": True}
@@ -1501,6 +1942,277 @@ def admin_users(user: dict = Depends(current_admin)):
             FROM users u ORDER BY u.last_seen DESC
         """, (today_str(),)).fetchall()
     return [dict(r) for r in rows]
+
+
+# ─── ПРОГРАММЫ: API ────────────────────────────────────────────────────────
+
+def _validate_program_levels(c, levels: list[ProgramLevelIn]):
+    if not levels:
+        raise HTTPException(400, "Программа должна содержать хотя бы один уровень")
+    seen = set()
+    for lvl in levels:
+        if lvl.practice_id in seen:
+            raise HTTPException(400, f"Практика {lvl.practice_id} указана в нескольких уровнях")
+        seen.add(lvl.practice_id)
+        p = c.execute("SELECT id FROM practices WHERE id=?", (lvl.practice_id,)).fetchone()
+        if not p:
+            raise HTTPException(404, f"Практика {lvl.practice_id} не найдена")
+
+
+@app.get("/api/admin/programs")
+def admin_list_programs(user: dict = Depends(current_admin)):
+    with db() as c:
+        rows = c.execute("SELECT * FROM programs ORDER BY created_at DESC").fetchall()
+        return [_program_to_dict(c, r, include_levels=True) for r in rows]
+
+
+@app.post("/api/admin/programs")
+def admin_create_program(body: ProgramIn, user: dict = Depends(current_admin)):
+    pid = "prog_" + secrets.token_hex(6)
+    with db() as c:
+        _validate_program_levels(c, body.levels)
+        c.execute(
+            """INSERT INTO programs (id, name, description, icon, palette, on_miss, visibility,
+                                     active, created_at, created_by)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (pid, body.name, body.description or "", body.icon or "🎯",
+             body.palette or "amber", body.on_miss, body.visibility,
+             int(body.active), datetime.now(TZ).isoformat(), user["id"]),
+        )
+        for i, lvl in enumerate(body.levels, start=1):
+            c.execute(
+                """INSERT INTO program_levels (program_id, level_order, practice_id, duration_days)
+                   VALUES (?,?,?,?)""",
+                (pid, i, lvl.practice_id, lvl.duration_days),
+            )
+    return {"id": pid}
+
+
+@app.put("/api/admin/programs/{prog_id}")
+def admin_update_program(prog_id: str, body: ProgramIn, user: dict = Depends(current_admin)):
+    with db() as c:
+        existing = c.execute("SELECT id FROM programs WHERE id=?", (prog_id,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "Программа не найдена")
+        _validate_program_levels(c, body.levels)
+        c.execute(
+            """UPDATE programs SET name=?, description=?, icon=?, palette=?, on_miss=?,
+                                   visibility=?, active=? WHERE id=?""",
+            (body.name, body.description or "", body.icon or "🎯",
+             body.palette or "amber", body.on_miss, body.visibility,
+             int(body.active), prog_id),
+        )
+        # Полная перезапись уровней. Подписки юзеров (user_programs) не трогаем —
+        # они продолжают указывать на свой current_level. Если уровень удалён —
+        # _advance_user_programs увидит отсутствие и завершит программу.
+        c.execute("DELETE FROM program_levels WHERE program_id=?", (prog_id,))
+        for i, lvl in enumerate(body.levels, start=1):
+            c.execute(
+                """INSERT INTO program_levels (program_id, level_order, practice_id, duration_days)
+                   VALUES (?,?,?,?)""",
+                (prog_id, i, lvl.practice_id, lvl.duration_days),
+            )
+    return {"ok": True}
+
+
+@app.delete("/api/admin/programs/{prog_id}")
+def admin_delete_program(prog_id: str, user: dict = Depends(current_admin)):
+    with db() as c:
+        c.execute("DELETE FROM programs WHERE id=?", (prog_id,))
+    return {"ok": True}
+
+
+@app.get("/api/programs")
+def list_programs(user: dict = Depends(current_user)):
+    """Публичный каталог программ: только active=1.
+    Программы visibility='individual' видны только тем, кому назначены."""
+    with db() as c:
+        assigned_ids = {
+            r["target_id"] for r in c.execute(
+                "SELECT target_id FROM user_assignments WHERE user_id=? AND target_type='program'",
+                (user["id"],),
+            ).fetchall()
+        }
+        rows = c.execute(
+            "SELECT * FROM programs WHERE active=1 ORDER BY created_at DESC"
+        ).fetchall()
+        rows = [r for r in rows
+                if r["visibility"] == "public" or r["id"] in assigned_ids]
+        return [_program_to_dict(c, r, include_levels=True) for r in rows]
+
+
+@app.post("/api/my/programs/join")
+def join_program(body: ProgramJoinIn, user: dict = Depends(current_user)):
+    with db() as c:
+        prog = c.execute(
+            "SELECT * FROM programs WHERE id=? AND active=1", (body.program_id,)
+        ).fetchone()
+        if not prog:
+            raise HTTPException(404, "Программа не найдена")
+        # Проверка доступа для individual-программ
+        if prog["visibility"] == "individual":
+            assigned = c.execute(
+                """SELECT 1 FROM user_assignments
+                   WHERE user_id=? AND target_type='program' AND target_id=?""",
+                (user["id"], body.program_id),
+            ).fetchone()
+            if not assigned:
+                raise HTTPException(403, "Программа не назначена этому пользователю")
+        levels = _program_levels(c, body.program_id)
+        if not levels:
+            raise HTTPException(400, "В программе нет уровней")
+        today_d = user_today_d(user["id"], c)
+        first_practice = levels[0]["practice_id"]
+        c.execute(
+            """INSERT INTO user_programs (user_id, program_id, current_level, level_started_at,
+                                          level_completed_days, status, joined_at)
+               VALUES (?,?,1,?,0,'active',?)
+               ON CONFLICT(user_id, program_id) DO UPDATE SET
+                 current_level=1, level_started_at=excluded.level_started_at,
+                 level_completed_days=0, status='active', completed_at=NULL""",
+            (user["id"], body.program_id, today_d.isoformat(),
+             datetime.now(TZ).isoformat()),
+        )
+        # Подписываем юзера на практику первого уровня
+        _sync_program_user_practice(c, user["id"], first_practice, today_d)
+        # Старт-мотивашка
+        _send_motivation(c, user["id"], "program", body.program_id, "start", 0, today_d)
+    return {"ok": True}
+
+
+@app.delete("/api/my/programs/leave/{prog_id}")
+def leave_program(prog_id: str, user: dict = Depends(current_user)):
+    with db() as c:
+        c.execute("DELETE FROM user_programs WHERE user_id=? AND program_id=?",
+                  (user["id"], prog_id))
+    return {"ok": True}
+
+
+# ─── МОТИВАШКИ: API ────────────────────────────────────────────────────────
+
+def _validate_motivation_target(c, practice_id: Optional[str], program_id: Optional[str]):
+    if bool(practice_id) == bool(program_id):
+        raise HTTPException(400, "Укажи ровно одно: practice_id или program_id")
+    if practice_id:
+        if not c.execute("SELECT 1 FROM practices WHERE id=?", (practice_id,)).fetchone():
+            raise HTTPException(404, "Практика не найдена")
+    else:
+        if not c.execute("SELECT 1 FROM programs WHERE id=?", (program_id,)).fetchone():
+            raise HTTPException(404, "Программа не найдена")
+
+
+@app.get("/api/admin/motivations")
+def admin_list_motivations(practice_id: Optional[str] = None,
+                           program_id: Optional[str] = None,
+                           user: dict = Depends(current_admin)):
+    with db() as c:
+        if practice_id:
+            rows = c.execute(
+                "SELECT * FROM motivations WHERE practice_id=? ORDER BY kind, value, id",
+                (practice_id,),
+            ).fetchall()
+        elif program_id:
+            rows = c.execute(
+                "SELECT * FROM motivations WHERE program_id=? ORDER BY kind, value, id",
+                (program_id,),
+            ).fetchall()
+        else:
+            rows = c.execute("SELECT * FROM motivations ORDER BY kind, value, id").fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/admin/motivations")
+def admin_create_motivation(body: MotivationIn, user: dict = Depends(current_admin)):
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Текст мотивашки не может быть пустым")
+    with db() as c:
+        _validate_motivation_target(c, body.practice_id, body.program_id)
+        cur = c.execute(
+            """INSERT INTO motivations (practice_id, program_id, kind, value, text, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            (body.practice_id, body.program_id, body.kind, body.value, text,
+             datetime.now(TZ).isoformat()),
+        )
+    return {"id": cur.lastrowid}
+
+
+@app.post("/api/admin/motivations/bulk")
+def admin_create_motivations_bulk(body: MotivationBulkIn, user: dict = Depends(current_admin)):
+    """Массовое добавление мотивашек одного типа (одна kind+value, много текстов)."""
+    texts = [t.strip() for t in body.texts if t and t.strip()]
+    if not texts:
+        raise HTTPException(400, "Нет ни одного непустого текста")
+    with db() as c:
+        _validate_motivation_target(c, body.practice_id, body.program_id)
+        now_iso = datetime.now(TZ).isoformat()
+        c.executemany(
+            """INSERT INTO motivations (practice_id, program_id, kind, value, text, created_at)
+               VALUES (?,?,?,?,?,?)""",
+            [(body.practice_id, body.program_id, body.kind, body.value, t, now_iso)
+             for t in texts],
+        )
+    return {"ok": True, "created": len(texts)}
+
+
+@app.delete("/api/admin/motivations/{mid}")
+def admin_delete_motivation(mid: int, user: dict = Depends(current_admin)):
+    with db() as c:
+        c.execute("DELETE FROM motivations WHERE id=?", (mid,))
+    return {"ok": True}
+
+
+# ─── ИНДИВИДУАЛЬНЫЕ НАЗНАЧЕНИЯ ─────────────────────────────────────────────
+
+@app.get("/api/admin/users/{uid}/assignments")
+def admin_list_assignments(uid: int, user: dict = Depends(current_admin)):
+    with db() as c:
+        rows = c.execute(
+            """SELECT ua.target_type, ua.target_id, ua.assigned_at,
+                      CASE ua.target_type
+                           WHEN 'practice' THEN (SELECT name FROM practices WHERE id=ua.target_id)
+                           WHEN 'program'  THEN (SELECT name FROM programs  WHERE id=ua.target_id)
+                      END AS target_name
+               FROM user_assignments ua
+               WHERE ua.user_id = ?
+               ORDER BY ua.assigned_at DESC""",
+            (uid,),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/admin/users/{uid}/assignments")
+def admin_create_assignment(uid: int, body: AssignmentIn, user: dict = Depends(current_admin)):
+    with db() as c:
+        if not c.execute("SELECT 1 FROM users WHERE user_id=?", (uid,)).fetchone():
+            raise HTTPException(404, "Пользователь не найден")
+        if body.target_type == "practice":
+            ok = c.execute("SELECT 1 FROM practices WHERE id=?", (body.target_id,)).fetchone()
+        else:
+            ok = c.execute("SELECT 1 FROM programs WHERE id=?", (body.target_id,)).fetchone()
+        if not ok:
+            raise HTTPException(404, f"{body.target_type} не найден(а)")
+        c.execute(
+            """INSERT INTO user_assignments (user_id, target_type, target_id, assigned_at, assigned_by)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT(user_id, target_type, target_id) DO NOTHING""",
+            (uid, body.target_type, body.target_id, datetime.now(TZ).isoformat(), user["id"]),
+        )
+    return {"ok": True}
+
+
+@app.delete("/api/admin/users/{uid}/assignments/{target_type}/{target_id}")
+def admin_delete_assignment(uid: int, target_type: str, target_id: str,
+                            user: dict = Depends(current_admin)):
+    if target_type not in ("practice", "program"):
+        raise HTTPException(400, "target_type должен быть 'practice' или 'program'")
+    with db() as c:
+        c.execute(
+            """DELETE FROM user_assignments
+               WHERE user_id=? AND target_type=? AND target_id=?""",
+            (uid, target_type, target_id),
+        )
+    return {"ok": True}
 
 
 # ─── TELEGRAM BOT ──────────────────────────────────────────────────────────
@@ -1818,10 +2530,13 @@ def _period_label(t: str) -> str:
 
 # ─── ЗАПУСК ────────────────────────────────────────────────────────────────
 scheduler: Optional[AsyncIOScheduler] = None
+MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None  # для отправки сообщений из sync-роутов
 
 
 @app.on_event("startup")
 async def on_startup():
+    global MAIN_LOOP
+    MAIN_LOOP = asyncio.get_running_loop()
     init_db()
     _init_secret()
     seed_demo_once()
