@@ -929,6 +929,9 @@ function UserHistoryModal({ user, onClose }) {
                       : t === 'photo' ? !!e.response_photo
                       : t === 'video' ? !!(e.response_video_url || '').trim()
                       : false;
+                    const hasText  = !!(e.response_text  || '').trim();
+                    const hasPhoto = !!e.response_photo;
+                    const hasVideo = !!(e.response_video_url || '').trim();
                     return (
                       <div key={i} className="rounded-md px-2 py-1.5" style={{background:'rgba(244,234,213,0.03)'}}>
                         <div className="flex items-center gap-2">
@@ -944,17 +947,17 @@ function UserHistoryModal({ user, onClose }) {
                           </span>
                           <span className="text-[10px] opacity-40 hidden md:inline">{fmtTs(e.ts)}</span>
                         </div>
-                        {t === 'text' && (e.response_text || '').trim() && (
+                        {hasText && (
                           <div className="mt-1 ml-16 text-xs opacity-80 whitespace-pre-wrap">{e.response_text}</div>
                         )}
-                        {t === 'photo' && e.response_photo && (
+                        {hasPhoto && (
                           <div className="mt-1 ml-16">
                             <a href={e.response_photo} target="_blank" rel="noopener">
                               <img src={e.response_photo} className="max-h-40 rounded-lg"/>
                             </a>
                           </div>
                         )}
-                        {t === 'video' && (e.response_video_url || '').trim() && (
+                        {hasVideo && (
                           <div className="mt-1 ml-16 text-xs">
                             <a href={e.response_video_url} target="_blank" rel="noopener"
                                className="underline opacity-80 break-all" style={{color:'#d4a857'}}>
@@ -995,6 +998,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     reminder_to: practice.reminder_to || '21:00',
     active: practice.active !== false,
     catalog_hidden: practice.catalog_hidden === true,
+    extras: practice.extras || [],
     category_ids: practice.category_ids || [],
   });
   const [saving, setSaving] = useState(false);
@@ -1042,13 +1046,33 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
             placeholder="Зачем эта практика, инструкция..." className="input-field w-full px-4 py-3 rounded-xl resize-none"/>
         </Field>
 
-        <Field label="Тип учёта">
+        <Field label="Основной тип (обязательно для «день засчитан»)">
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             <TypeBtn active={v.type==='binary'} onClick={() => set('type','binary')} title="Факт" sub="Сделано или нет"/>
             <TypeBtn active={v.type==='count'} onClick={() => set('type','count')} title="Количество" sub="С целью на день"/>
             <TypeBtn active={v.type==='text'} onClick={() => set('type','text')} title="Текст" sub="Написать ответ"/>
             <TypeBtn active={v.type==='photo'} onClick={() => set('type','photo')} title="Фото" sub="Загрузить снимок"/>
             <TypeBtn active={v.type==='video'} onClick={() => set('type','video')} title="Видео" sub="Ссылка на видео"/>
+          </div>
+        </Field>
+
+        <Field label="Дополнительные опциональные поля">
+          <p className="text-xs opacity-50 mb-2">Юзер может (но не обязан) приложить к отметке. На «день засчитан» не влияют — только основной тип.</p>
+          <div className="grid grid-cols-3 gap-2">
+            {['text','photo','video'].filter(k => k !== v.type).map((k) => {
+              const on = (v.extras || []).includes(k);
+              return (
+                <button key={k} onClick={() => set('extras', on ? v.extras.filter(x => x !== k) : [...(v.extras || []), k])}
+                  className="py-2 rounded-lg text-sm"
+                  style={{
+                    background: on ? 'rgba(212,168,87,0.12)' : 'rgba(244,234,213,0.04)',
+                    border: `1px solid ${on ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.1)'}`,
+                    color: on ? '#d4a857' : '#f4ead5',
+                  }}>
+                  {k === 'text' ? 'Текст' : k === 'photo' ? 'Фото' : 'Видео'}
+                </button>
+              );
+            })}
           </div>
         </Field>
 

@@ -86,7 +86,8 @@ CREATE TABLE IF NOT EXISTS practices (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
   description    TEXT,
-  type           TEXT NOT NULL,         -- 'binary' | 'count'
+  type           TEXT NOT NULL,         -- 'binary' | 'count' | 'text' | 'photo' | 'video' — главный (определяет «день засчитан»)
+  extras         TEXT,                  -- CSV из 'text','photo','video': опциональные доп. поля (юзер может, но не обязан)
   target         INTEGER,
   unit           TEXT,
   icon           TEXT,
@@ -314,6 +315,7 @@ def init_db():
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_text TEXT")
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_photo TEXT")
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_video_url TEXT")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN extras TEXT")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -747,6 +749,7 @@ class PracticeIn(BaseModel):
     name: str
     description: Optional[str] = ""
     type: Literal["binary", "count", "text", "photo", "video"] = "binary"
+    extras: list[Literal["text", "photo", "video"]] = Field(default_factory=list)
     target: Optional[int] = None
     unit: Optional[str] = ""
     icon: Optional[str] = "✨"
@@ -993,12 +996,21 @@ def compute_full_day_streaks(subs, done_set, today_d: date) -> dict:
             "half_current": h_cur, "half_best": h_best}
 
 
+def _parse_extras(value) -> list:
+    """Парсит CSV из БД в список. Фильтрует допустимые значения."""
+    if not value:
+        return []
+    allowed = {"text", "photo", "video"}
+    return [x.strip() for x in str(value).split(",") if x.strip() in allowed]
+
+
 def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
     return {
         "id": row["id"],
         "name": row["name"],
         "description": row["description"] or "",
         "type": row["type"],
+        "extras": _parse_extras(row["extras"]) if "extras" in row.keys() else [],
         "target": row["target"],
         "unit": row["unit"] or "",
         "icon": row["icon"] or "✨",
@@ -2037,14 +2049,17 @@ def admin_stats(user: dict = Depends(current_admin)):
 def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
     pid = "p_" + secrets.token_hex(6)
     photo_value = save_photo_from_input(body.photo, pid)
+    # extras не может содержать сам primary type, чтобы не дублировать
+    extras = [x for x in body.extras if x != body.type]
+    extras_csv = ",".join(extras)
     with db() as c:
         c.execute(
             """INSERT INTO practices
-               (id, name, description, type, target, unit, icon, palette, media_url, media_label,
+               (id, name, description, type, extras, target, unit, icon, palette, media_url, media_label,
                 photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
                 created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (pid, body.name, body.description, body.type, body.target, body.unit, body.icon,
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (pid, body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden),
@@ -2061,11 +2076,13 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
         existing = c.execute("SELECT id FROM practices WHERE id=?", (pid,)).fetchone()
         if not existing:
             raise HTTPException(404, "Not found")
+        extras = [x for x in body.extras if x != body.type]
+        extras_csv = ",".join(extras)
         c.execute(
-            """UPDATE practices SET name=?, description=?, type=?, target=?, unit=?, icon=?,
+            """UPDATE practices SET name=?, description=?, type=?, extras=?, target=?, unit=?, icon=?,
                palette=?, media_url=?, media_label=?, photo=?, max_reminders=?,
                reminder_from=?, reminder_to=?, active=?, catalog_hidden=? WHERE id=?""",
-            (body.name, body.description, body.type, body.target, body.unit, body.icon,
+            (body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden), pid),
