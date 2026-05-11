@@ -1444,6 +1444,16 @@ def _advance_user_programs(c, user_id: int, today_d: date) -> list[dict]:
                    WHERE user_id=? AND program_id=?""",
                 (completed, user_id, program_id),
             )
+            # Стрик-мотивашка программы: если есть мотивашка на текущее число completed
+            if completed > 0:
+                has = c.execute(
+                    """SELECT 1 FROM motivations
+                       WHERE program_id=? AND kind='streak' AND value=? LIMIT 1""",
+                    (program_id, completed),
+                ).fetchone()
+                if has:
+                    _send_motivation(c, user_id, "program", program_id,
+                                     "streak", completed, today_d)
             break
     return events
 
@@ -1634,7 +1644,7 @@ def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
     ts = int(datetime.now(TZ).timestamp())
     with db() as c:
         target_date = body.date or user_today_str(user["id"], c)
-        practice = c.execute("SELECT type FROM practices WHERE id=?", (body.practice_id,)).fetchone()
+        practice = c.execute("SELECT * FROM practices WHERE id=?", (body.practice_id,)).fetchone()
         if not practice:
             raise HTTPException(404, "Practice not found")
         existing = c.execute(
@@ -1654,9 +1664,40 @@ def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
                      completed=excluded.completed, count=excluded.count, ts=excluded.ts""",
                 (user["id"], body.practice_id, target_date, completed, count, ts),
             )
+        today_d = user_today_d(user["id"], c)
+        # Стрик-мотивашка для практики — только если запись закрывает сегодня и день засчитан
+        if target_date == today_d.isoformat():
+            target = practice["target"] or 1
+            day_counted = (completed == 1) if practice["type"] == "binary" else (count >= target)
+            if day_counted:
+                _check_practice_streak_motivation(c, user["id"], body.practice_id, today_d)
         # Подвинуть прогресс программ — переход уровня может стрельнуть прямо сейчас.
-        _advance_user_programs(c, user["id"], user_today_d(user["id"], c))
+        _advance_user_programs(c, user["id"], today_d)
     return {"ok": True}
+
+
+def _check_practice_streak_motivation(c, user_id: int, practice_id: str, today_d: date):
+    """Если у юзера есть мотивашка с kind='streak' value=N, и текущий стрик практики
+    равен N (только что хитнули) — отправить. Дедуп по дате через motivations_sent."""
+    done_rows = c.execute(
+        """SELECT e.date FROM entries e
+           JOIN practices p ON p.id = e.practice_id
+           WHERE e.user_id = ? AND e.practice_id = ?
+             AND ( (p.type='binary' AND e.completed=1)
+                   OR (p.type='count' AND e.count >= COALESCE(p.target,1)) )""",
+        (user_id, practice_id),
+    ).fetchall()
+    cur_streak, _ = compute_streaks({r["date"] for r in done_rows}, today_d)
+    if cur_streak <= 0:
+        return
+    # Есть ли мотивашка ровно на эту величину стрика?
+    has = c.execute(
+        """SELECT 1 FROM motivations
+           WHERE practice_id=? AND kind='streak' AND value=? LIMIT 1""",
+        (practice_id, cur_streak),
+    ).fetchone()
+    if has:
+        _send_motivation(c, user_id, "practice", practice_id, "streak", cur_streak, today_d)
 
 
 @app.get("/api/leaderboard")
@@ -2528,6 +2569,92 @@ def _period_label(t: str) -> str:
     return {"week": "ещё на неделю", "month": "ещё на месяц", "forever": "без срока"}.get(t, "тем же сроком")
 
 
+async def miss_motivations_tick():
+    """Раз в день: для каждой активной подписки юзера считаем «дней пропуска подряд»
+    и шлём мотивашку kind='miss' если это число совпадает с одной из value."""
+    if not bot:
+        return
+    with db() as c:
+        miss_rows = c.execute(
+            "SELECT practice_id, program_id, value FROM motivations WHERE kind='miss'"
+        ).fetchall()
+        practice_miss: dict = {}
+        program_miss: dict = {}
+        for r in miss_rows:
+            if r["practice_id"]:
+                practice_miss.setdefault(r["practice_id"], set()).add(r["value"])
+            elif r["program_id"]:
+                program_miss.setdefault(r["program_id"], set()).add(r["value"])
+        if not practice_miss and not program_miss:
+            return
+
+        # Подписки на практики — для практик из practice_miss
+        if practice_miss:
+            placeholders = ",".join("?" * len(practice_miss))
+            pids = list(practice_miss.keys())
+            ups = c.execute(
+                f"""SELECT up.user_id, up.practice_id, up.period_start, u.tz
+                    FROM user_practices up
+                    JOIN users u ON u.user_id = up.user_id
+                    WHERE up.practice_id IN ({placeholders})
+                      AND (up.period_end IS NULL OR up.period_end >= date('now'))""",
+                pids,
+            ).fetchall()
+            for r in ups:
+                _maybe_send_miss(c, r["user_id"], "practice", r["practice_id"],
+                                 r["practice_id"],
+                                 date.fromisoformat(r["period_start"]),
+                                 _safe_tz(r["tz"]) or TZ,
+                                 practice_miss[r["practice_id"]])
+
+        # Подписки на программы — для каждой активной берём практику текущего уровня
+        if program_miss:
+            placeholders = ",".join("?" * len(program_miss))
+            ups = c.execute(
+                f"""SELECT up.user_id, up.program_id, up.current_level, up.level_started_at, u.tz
+                    FROM user_programs up
+                    JOIN users u ON u.user_id = up.user_id
+                    WHERE up.status='active' AND up.program_id IN ({placeholders})""",
+                list(program_miss.keys()),
+            ).fetchall()
+            for r in ups:
+                lvl = c.execute(
+                    "SELECT practice_id FROM program_levels WHERE program_id=? AND level_order=?",
+                    (r["program_id"], r["current_level"]),
+                ).fetchone()
+                if not lvl:
+                    continue
+                _maybe_send_miss(c, r["user_id"], "program", r["program_id"],
+                                 lvl["practice_id"],
+                                 date.fromisoformat(r["level_started_at"]),
+                                 _safe_tz(r["tz"]) or TZ,
+                                 program_miss[r["program_id"]])
+
+
+def _maybe_send_miss(c, user_id: int, scope_kind: str, scope_id: str,
+                     tracked_practice_id: str, start_d: date, tz: ZoneInfo,
+                     target_values: set):
+    """Считает дней пропуска подряд (с последнего done) и шлёт, если попали в value."""
+    today_d = datetime.now(tz).date()
+    last_done = c.execute(
+        """SELECT MAX(e.date) AS d FROM entries e
+           JOIN practices p ON p.id = e.practice_id
+           WHERE e.user_id=? AND e.practice_id=?
+             AND ((p.type='binary' AND e.completed=1)
+                  OR (p.type='count' AND e.count >= COALESCE(p.target,1)))""",
+        (user_id, tracked_practice_id),
+    ).fetchone()
+    if last_done and last_done["d"]:
+        base_d = date.fromisoformat(last_done["d"])
+    else:
+        base_d = start_d - timedelta(days=1)  # ни разу не делал — считаем со дня до старта
+    days_miss = (today_d - base_d).days - 1  # сегодня не считаем (день ещё может быть закрыт)
+    if days_miss <= 0:
+        return
+    if days_miss in target_values:
+        _send_motivation(c, user_id, scope_kind, scope_id, "miss", days_miss, today_d)
+
+
 # ─── ЗАПУСК ────────────────────────────────────────────────────────────────
 scheduler: Optional[AsyncIOScheduler] = None
 MAIN_LOOP: Optional[asyncio.AbstractEventLoop] = None  # для отправки сообщений из sync-роутов
@@ -2581,6 +2708,8 @@ async def on_startup():
                           next_run_time=datetime.now(TZ) + timedelta(seconds=30))
         scheduler.add_job(period_check_tick, "cron", hour=10, minute=0,
                           next_run_time=datetime.now(TZ) + timedelta(seconds=60))
+        # Мотивашки по пропускам — раз в день в 11:00 по серверному TZ
+        scheduler.add_job(miss_motivations_tick, "cron", hour=11, minute=0)
         scheduler.start()
         log.info("Bot + scheduler started")
     else:
