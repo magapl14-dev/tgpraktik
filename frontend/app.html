@@ -129,8 +129,9 @@ const heatColor = (ratio) => {
 // ─── Главный компонент ───
 function App() {
   const [me, setMe] = useState(null);
-  const [data, setData] = useState({ practices: [], history_practices: [], entries: {} });
+  const [data, setData] = useState({ practices: [], history_practices: [], entries: {}, programs: [] });
   const [catalog, setCatalog] = useState([]);
+  const [programsCatalog, setProgramsCatalog] = useState([]);
   const [categories, setCategories] = useState([]);
   const [board, setBoard] = useState([]);
   const [tab, setTab] = useState('today');
@@ -138,16 +139,18 @@ function App() {
   const [err, setErr] = useState('');
 
   const [joining, setJoining] = useState(null);
+  const [joiningProgram, setJoiningProgram] = useState(null);
   const [practiceDetail, setPracticeDetail] = useState(null);
   const [dateEntry, setDateEntry] = useState(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const refresh = async () => {
     try {
-      const [m, my, cat, cats] = await Promise.all([
-        api('/api/me'), api('/api/my'), api('/api/practices'), api('/api/categories')
+      const [m, my, cat, cats, progs] = await Promise.all([
+        api('/api/me'), api('/api/my'), api('/api/practices'),
+        api('/api/categories'), api('/api/programs')
       ]);
-      setMe(m); setData(my); setCatalog(cat); setCategories(cats);
+      setMe(m); setData(my); setCatalog(cat); setCategories(cats); setProgramsCatalog(progs);
     } catch (e) { setErr(e.message); }
   };
 
@@ -188,7 +191,12 @@ function App() {
                                     onPracticeTap={setPracticeDetail}
                                     onSettings={() => setSettingsOpen(true)}
                                     muted={me?.muted}/>}
-      {tab === 'catalog' && <CatalogTab catalog={catalog} categories={categories} joined={data.practices} onJoin={setJoining}/>}
+      {tab === 'catalog' && <CatalogTab catalog={catalog} categories={categories}
+                                        joined={data.practices}
+                                        programsCatalog={programsCatalog}
+                                        joinedPrograms={data.programs || []}
+                                        onJoin={setJoining}
+                                        onJoinProgram={setJoiningProgram}/>}
       {tab === 'history' && <HistoryTab data={data} onPracticeTap={setPracticeDetail}/>}
       {tab === 'board' && <BoardTab board={board} me={me} onPeriod={async(p) => {
         try { setBoard(await api(`/api/leaderboard?period=${p}`)); } catch (e) { setErr(e.message); }
@@ -197,6 +205,9 @@ function App() {
       {joining && <JoinSheet practice={joining} onClose={() => setJoining(null)} onJoined={async () => {
         setJoining(null); await refresh();
       }}/>}
+      {joiningProgram && <ProgramJoinSheet program={joiningProgram}
+        onClose={() => setJoiningProgram(null)}
+        onJoined={async () => { setJoiningProgram(null); await refresh(); }}/>}
       {practiceDetail && <PracticeDetailSheet
                             practice={practiceDetail}
                             entries={data.entries}
@@ -302,6 +313,15 @@ function TodayTab({ data, onChange, onPracticeTap, onSettings, muted }) {
             ))}
           </div>
         </>
+      )}
+
+      {(data.programs || []).length > 0 && (
+        <div className="mt-8">
+          <h2 className="font-display text-2xl mb-3">Программы</h2>
+          <div className="space-y-3">
+            {data.programs.map((pr) => <ProgramCard key={pr.program_id} pr={pr}/>)}
+          </div>
+        </div>
       )}
     </div>
   );
@@ -434,9 +454,10 @@ const buildPath = (cats, id) => {
   return out;
 };
 
-function CatalogTab({ catalog, categories, joined, onJoin }) {
+function CatalogTab({ catalog, categories, joined, programsCatalog, joinedPrograms, onJoin, onJoinProgram }) {
   const [currentCatId, setCurrentCatId] = useState(null);
   const joinedIds = new Set(joined.map((p) => p.id));
+  const joinedProgIds = new Set((joinedPrograms || []).map((p) => p.program_id));
   const byParent = useMemo(() => buildCatTree(categories), [categories]);
   const childCats = byParent[currentCatId || 'ROOT'] || [];
   const path = buildPath(categories, currentCatId);
@@ -501,6 +522,39 @@ function CatalogTab({ catalog, categories, joined, onJoin }) {
         </div>
       )}
 
+      {/* Программы — показываем только в корне */}
+      {!currentCatId && (programsCatalog || []).length > 0 && (
+        <div className="mb-6">
+          <h3 className="font-display text-xl mb-2">Программы</h3>
+          <div className="space-y-2">
+            {programsCatalog.map((pr) => {
+              const isJoined = joinedProgIds.has(pr.id);
+              const accent = PALETTE[pr.palette] || PALETTE.amber;
+              return (
+                <button key={pr.id} onClick={() => !isJoined && onJoinProgram(pr)} disabled={isJoined}
+                  className={`card rounded-2xl p-4 w-full text-left transition-all ${!isJoined ? 'active:scale-[0.99]' : 'opacity-60'}`}>
+                  <div className="flex items-center gap-3">
+                    <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0"
+                         style={{background: '#3d3520', border: `1px solid ${accent}33`}}>
+                      {pr.icon || '🎯'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h4 className="font-display text-lg leading-tight">{pr.name}</h4>
+                      {pr.description && <p className="text-xs opacity-60 mt-0.5 line-clamp-2">{pr.description}</p>}
+                      <div className="text-[11px] opacity-50 mt-1">
+                        {pr.total_levels} уровн. · {pr.on_miss === 'reset' ? 'сброс при пропуске' : 'продолжение при пропуске'}
+                      </div>
+                    </div>
+                    {isJoined ? <span className="text-xs px-2 py-1 rounded-full" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>в моих</span>
+                              : <ChevronRight size={20} className="opacity-40"/>}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Список практик */}
       {visiblePractices.length === 0 ? (
         <p className="opacity-50 text-center py-12 text-sm">
@@ -535,6 +589,86 @@ function CatalogTab({ catalog, categories, joined, onJoin }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function ProgramCard({ pr }) {
+  const accent = PALETTE[pr.palette] || PALETTE.amber;
+  const total = pr.current_duration_days || 0;
+  const completed = pr.level_completed_days || 0;
+  const pct = total ? Math.min(100, Math.round(completed/total*100)) : 0;
+  const isCompleted = pr.status === 'completed';
+  return (
+    <div className="card rounded-2xl p-4">
+      <div className="flex items-center gap-3">
+        <div className="w-12 h-12 rounded-xl flex items-center justify-center text-2xl flex-shrink-0"
+             style={{background: '#3d3520', border: `1px solid ${accent}33`}}>
+          {pr.icon || '🎯'}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="font-display text-lg leading-tight truncate">{pr.name}</div>
+          <div className="text-[11px] opacity-60">
+            {isCompleted
+              ? <>Завершена {pr.completed_at ? fmtDate(pr.completed_at) : ''}</>
+              : <>Уровень {pr.current_level} из {pr.total_levels} · {pr.current_practice_name || ''}</>}
+          </div>
+        </div>
+      </div>
+      {!isCompleted && total > 0 && (
+        <div className="mt-3">
+          <div className="flex items-baseline justify-between mb-1 text-xs opacity-70">
+            <span>День {completed} из {total}</span>
+            <span>{pct}%</span>
+          </div>
+          <div className="h-1 rounded-full overflow-hidden" style={{background:'rgba(244,234,213,0.08)'}}>
+            <div className="h-full transition-all duration-500" style={{width:`${pct}%`, background: `linear-gradient(90deg, ${accent}, #e0bd6a)`}}/>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProgramJoinSheet({ program, onClose, onJoined }) {
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    setBusy(true);
+    try {
+      await api('/api/my/programs/join', { method:'POST',
+        body: JSON.stringify({ program_id: program.id }) });
+      await onJoined();
+    } catch (e) { alert(e.message); setBusy(false); }
+  };
+  const totalDays = (program.levels || []).reduce((s, l) => s + (l.duration_days || 0), 0);
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.6)'}} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-3xl p-6 fade-in" style={{background:'#161824'}} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-display text-2xl">{program.icon} {program.name}</h2>
+          <button onClick={onClose} className="opacity-60"><X size={20}/></button>
+        </div>
+        {program.description && <p className="text-sm opacity-70 mb-4">{program.description}</p>}
+        <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Уровни ({totalDays} дн. в сумме)</p>
+        <div className="space-y-1.5 mb-4 max-h-64 overflow-y-auto">
+          {(program.levels || []).map((l) => (
+            <div key={l.level_order} className="flex items-center gap-3 rounded-lg p-2"
+                 style={{background:'rgba(244,234,213,0.04)'}}>
+              <div className="text-xs opacity-50 w-6 text-center">L{l.level_order}</div>
+              <div className="flex-1 text-sm">{l.practice_icon} {l.practice_name}</div>
+              <div className="text-xs opacity-60">{l.duration_days} дн.</div>
+            </div>
+          ))}
+        </div>
+        <p className="text-xs opacity-60 mb-4">
+          При пропуске дня: {program.on_miss === 'reset' ? 'уровень начнётся заново' : 'уровень продолжится, засчитываются только закрытые дни'}.
+        </p>
+        <button onClick={submit} disabled={busy}
+          className="w-full py-3.5 rounded-full font-medium transition-transform active:scale-[0.99] disabled:opacity-50"
+          style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+          {busy ? 'Присоединяемся...' : 'Начать программу'}
+        </button>
+      </div>
     </div>
   );
 }
