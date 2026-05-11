@@ -922,20 +922,46 @@ function UserHistoryModal({ user, onClose }) {
               ) : (
                 <div className="space-y-1 text-sm">
                   {data.entries.map((e, i) => {
-                    const done = e.practice_type === 'binary'
-                      ? e.completed
-                      : e.count >= (e.practice_target || 1);
+                    const t = e.practice_type;
+                    const done = t === 'binary' ? e.completed
+                      : t === 'count' ? e.count >= (e.practice_target || 1)
+                      : t === 'text'  ? !!(e.response_text || '').trim()
+                      : t === 'photo' ? !!e.response_photo
+                      : t === 'video' ? !!(e.response_video_url || '').trim()
+                      : false;
                     return (
-                      <div key={i} className="rounded-md px-2 py-1.5 flex items-center gap-2" style={{background:'rgba(244,234,213,0.03)'}}>
-                        <span className="text-xs opacity-60 w-14 flex-shrink-0">{fmtDate(e.date)}</span>
-                        <span>{e.practice_icon}</span>
-                        <span className="flex-1 truncate opacity-90">{e.practice_name}</span>
-                        <span className="text-xs" style={{color: done ? '#a3b18a' : '#e0bd6a'}}>
-                          {e.practice_type === 'binary'
-                            ? (e.completed ? '✓ выполнено' : '— не закрыто')
-                            : `${e.count}${e.practice_unit ? ' ' + e.practice_unit : ''} / ${e.practice_target || 1}`}
-                        </span>
-                        <span className="text-[10px] opacity-40 hidden md:inline">{fmtTs(e.ts)}</span>
+                      <div key={i} className="rounded-md px-2 py-1.5" style={{background:'rgba(244,234,213,0.03)'}}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs opacity-60 w-14 flex-shrink-0">{fmtDate(e.date)}</span>
+                          <span>{e.practice_icon}</span>
+                          <span className="flex-1 truncate opacity-90">{e.practice_name}</span>
+                          <span className="text-xs" style={{color: done ? '#a3b18a' : '#e0bd6a'}}>
+                            {t === 'binary' && (e.completed ? '✓ выполнено' : '— не закрыто')}
+                            {t === 'count'  && `${e.count}${e.practice_unit ? ' ' + e.practice_unit : ''} / ${e.practice_target || 1}`}
+                            {t === 'text'   && (done ? '✓ ответ' : '—')}
+                            {t === 'photo'  && (done ? '✓ фото' : '—')}
+                            {t === 'video'  && (done ? '✓ видео' : '—')}
+                          </span>
+                          <span className="text-[10px] opacity-40 hidden md:inline">{fmtTs(e.ts)}</span>
+                        </div>
+                        {t === 'text' && (e.response_text || '').trim() && (
+                          <div className="mt-1 ml-16 text-xs opacity-80 whitespace-pre-wrap">{e.response_text}</div>
+                        )}
+                        {t === 'photo' && e.response_photo && (
+                          <div className="mt-1 ml-16">
+                            <a href={e.response_photo} target="_blank" rel="noopener">
+                              <img src={e.response_photo} className="max-h-40 rounded-lg"/>
+                            </a>
+                          </div>
+                        )}
+                        {t === 'video' && (e.response_video_url || '').trim() && (
+                          <div className="mt-1 ml-16 text-xs">
+                            <a href={e.response_video_url} target="_blank" rel="noopener"
+                               className="underline opacity-80 break-all" style={{color:'#d4a857'}}>
+                              {e.response_video_url}
+                            </a>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -1017,9 +1043,12 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
         </Field>
 
         <Field label="Тип учёта">
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
             <TypeBtn active={v.type==='binary'} onClick={() => set('type','binary')} title="Факт" sub="Сделано или нет"/>
             <TypeBtn active={v.type==='count'} onClick={() => set('type','count')} title="Количество" sub="С целью на день"/>
+            <TypeBtn active={v.type==='text'} onClick={() => set('type','text')} title="Текст" sub="Написать ответ"/>
+            <TypeBtn active={v.type==='photo'} onClick={() => set('type','photo')} title="Фото" sub="Загрузить снимок"/>
+            <TypeBtn active={v.type==='video'} onClick={() => set('type','video')} title="Видео" sub="Ссылка на видео"/>
           </div>
         </Field>
 

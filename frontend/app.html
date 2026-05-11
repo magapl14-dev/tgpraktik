@@ -115,7 +115,29 @@ const dayN = (n) => n === 1 ? 'день' : (n % 10 >= 2 && n % 10 <= 4 && (n % 1
 const ymd = (d) => d.toISOString().slice(0, 10);
 const parseYmd = (s) => { const [y,m,d] = s.split('-').map(Number); return new Date(y, m-1, d); };
 const fmtDate = (s) => { try { return new Date(s+'T00:00:00').toLocaleDateString('ru-RU', {day:'numeric', month:'long'}); } catch(e) { return s; } };
-const isDone = (p, e) => !e ? false : p.type === 'binary' ? !!e.completed : (e.count || 0) >= (p.target || 1);
+const isDone = (p, e) => {
+  if (!e) return false;
+  switch (p.type) {
+    case 'binary': return !!e.completed;
+    case 'count':  return (e.count || 0) >= (p.target || 1);
+    case 'text':   return !!(e.response_text || '').trim();
+    case 'photo':  return !!e.response_photo;
+    case 'video':  return !!(e.response_video_url || '').trim();
+    default:       return false;
+  }
+};
+
+const compress = (file, maxDim = 700, q = 0.7) => new Promise((res, rej) => {
+  const r = new FileReader();
+  r.onload = (ev) => { const img = new Image(); img.onload = () => {
+    const c = document.createElement('canvas'); let w = img.width, h = img.height;
+    if (w > h && w > maxDim) { h = h*(maxDim/w); w = maxDim; }
+    else if (h >= w && h > maxDim) { w = w*(maxDim/h); h = maxDim; }
+    c.width = w; c.height = h; c.getContext('2d').drawImage(img, 0, 0, w, h);
+    res(c.toDataURL('image/jpeg', q));
+  }; img.onerror = rej; img.src = ev.target.result; };
+  r.onerror = rej; r.readAsDataURL(file);
+});
 
 // Цвет ячейки heatmap по «доле выполнения» дня (0..1) или null = нейтральный
 const heatColor = (ratio) => {
@@ -331,11 +353,13 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
   const [busy, setBusy] = useState(false);
   const [editingCount, setEditingCount] = useState(false);
   const [draft, setDraft] = useState('');
+  const [responseOpen, setResponseOpen] = useState(false);
   const accent = PALETTE[practice.palette] || PALETTE.amber;
   const done = isDone(practice, entry);
   const count = entry?.count || 0;
   const streak = practice.streak || 0;
   const bestStreak = practice.best_streak || 0;
+  const isResponseType = practice.type === 'text' || practice.type === 'photo' || practice.type === 'video';
 
   const stop = (e) => e.stopPropagation();
 
@@ -366,8 +390,12 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
     finally { setBusy(false); }
   };
 
+  const openResponse = (e) => { stop(e); setResponseOpen(true); };
+
   return (
-    <div onClick={onTap} className={`card ${done ? 'card-done' : 'pulse-undone'} rounded-2xl p-4 cursor-pointer transition-transform active:scale-[0.995]`}>
+    <>
+    <div onClick={onTap}
+         className={`card ${done ? 'card-done' : 'pulse-undone'} rounded-2xl p-4 cursor-pointer transition-transform active:scale-[0.995]`}>
       <div className="flex items-center gap-3">
         <div className="flex-shrink-0 w-12 h-12 rounded-xl flex items-center justify-center text-2xl overflow-hidden"
              style={{background: practice.photo ? 'transparent' : '#3d3520', border:`1px solid ${accent}33`}}>
@@ -386,16 +414,20 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
               <span className="flex items-center gap-1 opacity-70"><Flame size={11}/>рекорд {bestStreak}</span>
             )}
             {practice.type === 'count' && <span className="flex items-center gap-1"><Target size={11}/>{practice.target}{practice.unit ? ' '+practice.unit : ''}</span>}
+            {practice.type === 'text'  && <span>ответ текстом</span>}
+            {practice.type === 'photo' && <span>фото</span>}
+            {practice.type === 'video' && <span>ссылка на видео</span>}
           </div>
         </div>
-        {practice.type === 'binary' ? (
+        {practice.type === 'binary' && (
           <button onClick={updateBinary} disabled={busy}
             className="w-11 h-11 rounded-full flex items-center justify-center transition-transform active:scale-90"
             style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
                     color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
             {done ? <Check size={18} sw={3}/> : <Circle size={18} sw={1.5}/>}
           </button>
-        ) : (
+        )}
+        {practice.type === 'count' && (
           <div onClick={stop} className="flex items-center gap-1 rounded-full px-1 py-1" style={{background:'rgba(244,234,213,0.05)', border:'1px solid rgba(244,234,213,0.1)'}}>
             <button onClick={(e) => updateCount(-1, e)} disabled={busy || count === 0} className="w-7 h-7 rounded-full flex items-center justify-center disabled:opacity-30"><Minus size={14}/></button>
             {editingCount ? (
@@ -420,6 +452,127 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
                       color: done ? '#1a1410' : '#f4ead5'}}><Plus size={14} sw={2.5}/></button>
           </div>
         )}
+        {isResponseType && (
+          <button onClick={openResponse}
+            className="px-3 py-2 rounded-full text-xs whitespace-nowrap"
+            style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
+                    color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
+            {done ? '✓ ответ' : 'дать ответ'}
+          </button>
+        )}
+      </div>
+    </div>
+    {responseOpen && (
+      <ResponseSheet practice={practice} entry={entry}
+        onClose={() => setResponseOpen(false)}
+        onSaved={async () => { setResponseOpen(false); await onChange(); }}/>
+    )}
+    </>
+  );
+}
+
+function ResponseSheet({ practice, entry, onClose, onSaved }) {
+  const accent = PALETTE[practice.palette] || PALETTE.amber;
+  const [text, setText] = useState(entry?.response_text || '');
+  const [photo, setPhoto] = useState(entry?.response_photo || null);
+  const [videoUrl, setVideoUrl] = useState(entry?.response_video_url || '');
+  const [busy, setBusy] = useState(false);
+
+  const handlePhoto = async (file) => {
+    if (!file) return;
+    try { setPhoto(await compress(file)); }
+    catch (e) { alert('Не получилось обработать фото'); }
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const body = { practice_id: practice.id };
+      if (practice.type === 'text')  body.response_text = text;
+      if (practice.type === 'photo') body.response_photo = photo || '';
+      if (practice.type === 'video') body.response_video_url = videoUrl;
+      await api('/api/my/entry', { method:'POST', body: JSON.stringify(body) });
+      await onSaved();
+    } catch (e) { alert(e.message); setBusy(false); }
+  };
+
+  const clear = async () => {
+    if (!confirm('Стереть сегодняшний ответ?')) return;
+    setBusy(true);
+    try {
+      const body = { practice_id: practice.id };
+      if (practice.type === 'text')  body.response_text = '';
+      if (practice.type === 'photo') body.response_photo = '';
+      if (practice.type === 'video') body.response_video_url = '';
+      await api('/api/my/entry', { method:'POST', body: JSON.stringify(body) });
+      await onSaved();
+    } catch (e) { alert(e.message); setBusy(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.6)'}} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-3xl p-6 fade-in" style={{background:'#161824'}} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-display text-2xl">{practice.icon} {practice.name}</h2>
+          <button onClick={onClose} className="opacity-60"><X size={20}/></button>
+        </div>
+        {practice.description && <p className="text-sm opacity-70 mb-4">{practice.description}</p>}
+
+        {practice.type === 'text' && (
+          <>
+            <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Твой ответ за сегодня</p>
+            <textarea value={text} onChange={(e) => setText(e.target.value)} rows={6} autoFocus
+              placeholder="Напиши, что было сегодня…"
+              className="w-full px-4 py-3 rounded-xl resize-none mb-4"
+              style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.12)', color:'#f4ead5'}}/>
+          </>
+        )}
+
+        {practice.type === 'photo' && (
+          <>
+            <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Фото за сегодня</p>
+            {photo ? (
+              <div className="relative rounded-xl overflow-hidden mb-4" style={{border:'1px solid rgba(244,234,213,0.1)'}}>
+                <img src={photo} className="w-full max-h-72 object-contain" style={{background:'#0a0c14'}}/>
+                <button onClick={() => setPhoto(null)} className="absolute top-2 right-2 w-8 h-8 rounded-full"
+                  style={{background:'rgba(10,12,20,0.7)'}}>×</button>
+              </div>
+            ) : (
+              <label className="block p-6 rounded-xl text-center text-sm opacity-70 cursor-pointer mb-4"
+                style={{border:'1px dashed rgba(244,234,213,0.2)'}}>
+                Загрузить фото
+                <input type="file" accept="image/*" capture="user" className="hidden"
+                  onChange={(e) => handlePhoto(e.target.files?.[0])}/>
+              </label>
+            )}
+          </>
+        )}
+
+        {practice.type === 'video' && (
+          <>
+            <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Ссылка на видео</p>
+            <input type="url" value={videoUrl} onChange={(e) => setVideoUrl(e.target.value)} autoFocus
+              placeholder="https://..."
+              className="w-full px-4 py-3 rounded-xl mb-4"
+              style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.12)', color:'#f4ead5'}}/>
+          </>
+        )}
+
+        <div className="flex gap-2">
+          {isDone(practice, entry) && (
+            <button onClick={clear} disabled={busy}
+              className="px-4 py-3 rounded-full text-sm"
+              style={{border:'1px solid rgba(232,128,128,0.3)', color:'#e88080'}}>
+              Стереть
+            </button>
+          )}
+          <button onClick={save} disabled={busy}
+            className="flex-1 py-3.5 rounded-full font-medium transition-transform active:scale-[0.99] disabled:opacity-50"
+            style={{background:`linear-gradient(135deg, ${accent}, #b8902f)`, color:'#1a1410'}}>
+            {busy ? 'Сохраняем...' : 'Сохранить'}
+          </button>
+        </div>
+        <p className="text-[11px] opacity-50 text-center mt-3">Ответ можно изменить только за сегодня. Прошлые дни — заморожены.</p>
       </div>
     </div>
   );
@@ -729,8 +882,7 @@ function buildHeatmap({ historyPractices, entries, today, days = 70, practiceId 
       active++;
       const e = entries[`${key}_${p.id}`];
       if (!e) continue;
-      const ok = p.type === 'binary' ? !!e.completed : (e.count || 0) >= (p.target || 1);
-      if (ok) done++;
+      if (isDone(p, e)) done++;
     }
     arr.push({
       date: key,
@@ -940,6 +1092,7 @@ function DateEntrySheet({ practice, date, currentEntry, onClose, onSaved }) {
   const [busy, setBusy] = useState(false);
   const [completed, setCompleted] = useState(currentEntry?.completed ?? false);
   const [count, setCount] = useState(currentEntry?.count ?? 0);
+  const isResponseType = practice.type === 'text' || practice.type === 'photo' || practice.type === 'video';
 
   const save = async () => {
     setBusy(true);
@@ -963,7 +1116,32 @@ function DateEntrySheet({ practice, date, currentEntry, onClose, onSaved }) {
           <button onClick={onClose} className="opacity-60"><X size={20}/></button>
         </div>
 
-        {practice.type === 'binary' ? (
+        {isResponseType ? (
+          <div className="mb-5">
+            {practice.type === 'text' && (
+              currentEntry?.response_text
+                ? <p className="text-sm whitespace-pre-wrap p-4 rounded-xl" style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.08)'}}>{currentEntry.response_text}</p>
+                : <p className="text-sm opacity-50 text-center py-6">Ответа за этот день не было.</p>
+            )}
+            {practice.type === 'photo' && (
+              currentEntry?.response_photo
+                ? <a href={currentEntry.response_photo} target="_blank" rel="noopener" className="block rounded-xl overflow-hidden" style={{border:'1px solid rgba(244,234,213,0.1)'}}>
+                    <img src={currentEntry.response_photo} className="w-full max-h-[60vh] object-contain" style={{background:'#0a0c14'}}/>
+                  </a>
+                : <p className="text-sm opacity-50 text-center py-6">Фото за этот день не было.</p>
+            )}
+            {practice.type === 'video' && (
+              currentEntry?.response_video_url
+                ? <a href={currentEntry.response_video_url} target="_blank" rel="noopener"
+                     className="block p-4 rounded-xl text-sm break-all underline"
+                     style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.08)', color:'#d4a857'}}>
+                    {currentEntry.response_video_url}
+                  </a>
+                : <p className="text-sm opacity-50 text-center py-6">Видео за этот день не было.</p>
+            )}
+            <p className="text-[11px] opacity-50 text-center mt-3">Прошлые дни заморожены — изменить нельзя.</p>
+          </div>
+        ) : practice.type === 'binary' ? (
           <div className="grid grid-cols-2 gap-2 mb-5">
             <button onClick={() => setCompleted(false)}
                     className="py-4 rounded-xl text-sm"
@@ -993,11 +1171,20 @@ function DateEntrySheet({ practice, date, currentEntry, onClose, onSaved }) {
           </div>
         )}
 
-        <button onClick={save} disabled={busy}
-                className="w-full py-3.5 rounded-full font-medium disabled:opacity-50"
-                style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
-          {busy ? 'Сохраняем...' : 'Сохранить'}
-        </button>
+        {!isResponseType && (
+          <button onClick={save} disabled={busy}
+                  className="w-full py-3.5 rounded-full font-medium disabled:opacity-50"
+                  style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+            {busy ? 'Сохраняем...' : 'Сохранить'}
+          </button>
+        )}
+        {isResponseType && (
+          <button onClick={onClose}
+                  className="w-full py-3.5 rounded-full"
+                  style={{border:'1px solid rgba(244,234,213,0.15)'}}>
+            Закрыть
+          </button>
+        )}
       </div>
     </div>
   );

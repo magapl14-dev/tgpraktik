@@ -116,12 +116,15 @@ CREATE TABLE IF NOT EXISTS user_practices (
 );
 
 CREATE TABLE IF NOT EXISTS entries (
-  user_id     INTEGER NOT NULL,
-  practice_id TEXT NOT NULL,
-  date        TEXT NOT NULL,           -- YYYY-MM-DD
-  completed   INTEGER DEFAULT 0,
-  count       INTEGER DEFAULT 0,
-  ts          INTEGER NOT NULL,
+  user_id            INTEGER NOT NULL,
+  practice_id        TEXT NOT NULL,
+  date               TEXT NOT NULL,           -- YYYY-MM-DD
+  completed          INTEGER DEFAULT 0,
+  count              INTEGER DEFAULT 0,
+  response_text      TEXT,                    -- для type='text'
+  response_photo     TEXT,                    -- /photos/entries/<file>.jpg для type='photo'
+  response_video_url TEXT,                    -- ссылка для type='video'
+  ts                 INTEGER NOT NULL,
   PRIMARY KEY (user_id, practice_id, date)
 );
 
@@ -308,6 +311,9 @@ def init_db():
         _alter_safe(c, "ALTER TABLE users ADD COLUMN mute_until INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE user_practices ADD COLUMN period_end_notified INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN catalog_hidden INTEGER DEFAULT 0")
+        _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_text TEXT")
+        _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_photo TEXT")
+        _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_video_url TEXT")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -740,7 +746,7 @@ def save_photo_from_input(value: Optional[str], practice_id: str) -> Optional[st
 class PracticeIn(BaseModel):
     name: str
     description: Optional[str] = ""
-    type: Literal["binary", "count"] = "binary"
+    type: Literal["binary", "count", "text", "photo", "video"] = "binary"
     target: Optional[int] = None
     unit: Optional[str] = ""
     icon: Optional[str] = "✨"
@@ -826,6 +832,9 @@ class EntryIn(BaseModel):
     date: Optional[str] = None      # YYYY-MM-DD, default — сегодня
     completed: Optional[bool] = None
     count: Optional[int] = None     # абсолютное значение, не дельта
+    response_text: Optional[str] = None      # для type='text'
+    response_photo: Optional[str] = None     # base64 data: URL или '/photos/...' для type='photo'
+    response_video_url: Optional[str] = None # для type='video'
 
 
 class SettingsIn(BaseModel):
@@ -846,9 +855,59 @@ def today_str() -> str:
 def is_done(practice_row, entry_row) -> bool:
     if not entry_row:
         return False
-    if practice_row["type"] == "binary":
+    t = practice_row["type"]
+    if t == "binary":
         return bool(entry_row["completed"])
-    return (entry_row["count"] or 0) >= (practice_row["target"] or 1)
+    if t == "count":
+        return (entry_row["count"] or 0) >= (practice_row["target"] or 1)
+    if t == "text":
+        return bool((entry_row["response_text"] or "").strip())
+    if t == "photo":
+        return bool(entry_row["response_photo"])
+    if t == "video":
+        return bool((entry_row["response_video_url"] or "").strip())
+    return False
+
+
+# SQL-фрагмент для условия «день засчитан». Подставляется в WHERE.
+# Требует, чтобы entries был под алиасом e, а practices — под p.
+DONE_SQL = (
+    "((p.type='binary' AND e.completed=1)"
+    " OR (p.type='count'  AND e.count >= COALESCE(p.target,1))"
+    " OR (p.type='text'   AND e.response_text IS NOT NULL AND TRIM(e.response_text) != '')"
+    " OR (p.type='photo'  AND e.response_photo IS NOT NULL AND e.response_photo != '')"
+    " OR (p.type='video'  AND e.response_video_url IS NOT NULL AND TRIM(e.response_video_url) != ''))"
+)
+
+
+def save_response_photo(value: Optional[str], user_id: int, practice_id: str,
+                        date_iso: str) -> Optional[str]:
+    """Принимает base64 data:image или существующий путь /photos/entries/...
+    Возвращает финальный путь под /photos/entries/. Пустые значения → None."""
+    if not value:
+        return None
+    if value.startswith("/photos/"):
+        return value
+    if not value.startswith("data:"):
+        return None
+    import base64, re
+    m = re.match(r"data:image/(\w+);base64,(.+)", value, re.S)
+    if not m:
+        return None
+    ext = m.group(1).lower()
+    if ext == "jpeg":
+        ext = "jpg"
+    if ext not in ("jpg", "png", "webp"):
+        ext = "jpg"
+    try:
+        data = base64.b64decode(m.group(2))
+    except Exception:
+        return None
+    entries_dir = PHOTOS_DIR / "entries"
+    entries_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"{user_id}_{practice_id}_{date_iso}.{ext}"
+    (entries_dir / fname).write_bytes(data)
+    return f"/photos/entries/{fname}"
 
 
 def compute_streaks(done_dates, today: date) -> tuple[int, int]:
@@ -1174,6 +1233,9 @@ def my_data(user: dict = Depends(current_user)):
             entries[f"{e['date']}_{e['practice_id']}"] = {
                 "completed": bool(e["completed"]),
                 "count": e["count"],
+                "response_text": e["response_text"],
+                "response_photo": e["response_photo"],
+                "response_video_url": e["response_video_url"],
                 "ts": e["ts"],
             }
 
@@ -1208,11 +1270,9 @@ def my_data(user: dict = Depends(current_user)):
 
         # Полная история «выполненных» дней — для расчёта серий.
         done_rows = c.execute(
-            """SELECT e.practice_id, e.date FROM entries e
-               JOIN practices p ON p.id = e.practice_id
-               WHERE e.user_id = ?
-                 AND ( (p.type='binary' AND e.completed=1)
-                       OR (p.type='count' AND e.count >= COALESCE(p.target,1)) )""",
+            f"""SELECT e.practice_id, e.date FROM entries e
+                JOIN practices p ON p.id = e.practice_id
+                WHERE e.user_id = ? AND {DONE_SQL}""",
             (user["id"],),
         ).fetchall()
 
@@ -1643,32 +1703,84 @@ def leave_practice(practice_id: str, user: dict = Depends(current_user)):
 def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
     ts = int(datetime.now(TZ).timestamp())
     with db() as c:
-        target_date = body.date or user_today_str(user["id"], c)
+        today_d = user_today_d(user["id"], c)
+        target_date = body.date or today_d.isoformat()
         practice = c.execute("SELECT * FROM practices WHERE id=?", (body.practice_id,)).fetchone()
         if not practice:
             raise HTTPException(404, "Practice not found")
+
+        # Для text/photo/video — прошлые дни заморожены, изменять можно только сегодня
+        is_response_type = practice["type"] in ("text", "photo", "video")
+        if is_response_type and target_date != today_d.isoformat():
+            raise HTTPException(403, "Ответ можно дать только за сегодня")
+
         existing = c.execute(
             "SELECT * FROM entries WHERE user_id=? AND practice_id=? AND date=?",
             (user["id"], body.practice_id, target_date),
         ).fetchone()
         completed = int(body.completed) if body.completed is not None else (existing["completed"] if existing else 0)
         count = body.count if body.count is not None else (existing["count"] if existing else 0)
-        if completed == 0 and count == 0:
+
+        # Поля ответа
+        resp_text = body.response_text if body.response_text is not None \
+                    else (existing["response_text"] if existing else None)
+        resp_video = body.response_video_url if body.response_video_url is not None \
+                     else (existing["response_video_url"] if existing else None)
+        if body.response_photo is not None:
+            # Пустая строка / None — снять фото
+            resp_photo = save_response_photo(body.response_photo, user["id"],
+                                              body.practice_id, target_date) \
+                         if body.response_photo else None
+        else:
+            resp_photo = existing["response_photo"] if existing else None
+
+        # Для response-типов завершённость определяется наличием ответа
+        if is_response_type:
+            if practice["type"] == "text":
+                completed = 1 if (resp_text or "").strip() else 0
+            elif practice["type"] == "photo":
+                completed = 1 if resp_photo else 0
+            elif practice["type"] == "video":
+                completed = 1 if (resp_video or "").strip() else 0
+
+        # Пустое всё — удаляем запись
+        all_empty = (completed == 0 and count == 0
+                     and not (resp_text or "").strip()
+                     and not resp_photo
+                     and not (resp_video or "").strip())
+        if all_empty:
             c.execute("DELETE FROM entries WHERE user_id=? AND practice_id=? AND date=?",
                       (user["id"], body.practice_id, target_date))
         else:
             c.execute(
-                """INSERT INTO entries (user_id, practice_id, date, completed, count, ts)
-                   VALUES (?,?,?,?,?,?)
+                """INSERT INTO entries (user_id, practice_id, date, completed, count,
+                                        response_text, response_photo, response_video_url, ts)
+                   VALUES (?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id, practice_id, date) DO UPDATE SET
-                     completed=excluded.completed, count=excluded.count, ts=excluded.ts""",
-                (user["id"], body.practice_id, target_date, completed, count, ts),
+                     completed=excluded.completed, count=excluded.count,
+                     response_text=excluded.response_text,
+                     response_photo=excluded.response_photo,
+                     response_video_url=excluded.response_video_url,
+                     ts=excluded.ts""",
+                (user["id"], body.practice_id, target_date, completed, count,
+                 resp_text, resp_photo, resp_video, ts),
             )
-        today_d = user_today_d(user["id"], c)
         # Стрик-мотивашка для практики — только если запись закрывает сегодня и день засчитан
         if target_date == today_d.isoformat():
+            t = practice["type"]
             target = practice["target"] or 1
-            day_counted = (completed == 1) if practice["type"] == "binary" else (count >= target)
+            if t == "binary":
+                day_counted = (completed == 1)
+            elif t == "count":
+                day_counted = (count >= target)
+            elif t == "text":
+                day_counted = bool((resp_text or "").strip())
+            elif t == "photo":
+                day_counted = bool(resp_photo)
+            elif t == "video":
+                day_counted = bool((resp_video or "").strip())
+            else:
+                day_counted = False
             if day_counted:
                 _check_practice_streak_motivation(c, user["id"], body.practice_id, today_d)
         # Подвинуть прогресс программ — переход уровня может стрельнуть прямо сейчас.
@@ -1680,11 +1792,9 @@ def _check_practice_streak_motivation(c, user_id: int, practice_id: str, today_d
     """Если у юзера есть мотивашка с kind='streak' value=N, и текущий стрик практики
     равен N (только что хитнули) — отправить. Дедуп по дате через motivations_sent."""
     done_rows = c.execute(
-        """SELECT e.date FROM entries e
-           JOIN practices p ON p.id = e.practice_id
-           WHERE e.user_id = ? AND e.practice_id = ?
-             AND ( (p.type='binary' AND e.completed=1)
-                   OR (p.type='count' AND e.count >= COALESCE(p.target,1)) )""",
+        f"""SELECT e.date FROM entries e
+            JOIN practices p ON p.id = e.practice_id
+            WHERE e.user_id = ? AND e.practice_id = ? AND {DONE_SQL}""",
         (user_id, practice_id),
     ).fetchall()
     cur_streak, _ = compute_streaks({r["date"] for r in done_rows}, today_d)
@@ -1714,13 +1824,12 @@ def leaderboard(period: Literal["week", "month", "all"] = "month",
 
     with db() as c:
         # для каждого юзера: сколько практико-дней должны были закрыть и сколько закрыли
-        rows = c.execute("""
+        rows = c.execute(f"""
             SELECT u.user_id, u.first_name, u.username,
                    (SELECT COUNT(*) FROM entries e
                       JOIN practices p ON p.id = e.practice_id
                       WHERE e.user_id = u.user_id AND e.date >= ? AND e.date <= ?
-                      AND ( (p.type='binary' AND e.completed=1)
-                            OR (p.type='count' AND e.count >= COALESCE(p.target,1)) )
+                      AND {DONE_SQL}
                    ) AS done_count,
                    (SELECT COUNT(*) FROM user_practices up
                       WHERE up.user_id = u.user_id
@@ -2014,11 +2123,9 @@ def admin_user_history(uid: int, user: dict = Depends(current_admin)):
         done_by_practice: dict = {}
         last_done_by_practice: dict = {}
         done_rows = c.execute(
-            """SELECT e.practice_id, e.date FROM entries e
-               JOIN practices p ON p.id = e.practice_id
-               WHERE e.user_id = ?
-                 AND ((p.type='binary' AND e.completed=1)
-                      OR (p.type='count' AND e.count >= COALESCE(p.target,1)))""",
+            f"""SELECT e.practice_id, e.date FROM entries e
+                JOIN practices p ON p.id = e.practice_id
+                WHERE e.user_id = ? AND {DONE_SQL}""",
             (uid,),
         ).fetchall()
         for r in done_rows:
@@ -2063,7 +2170,8 @@ def admin_user_history(uid: int, user: dict = Depends(current_admin)):
 
         # Последние 60 дней отметок
         entries_rows = c.execute(
-            """SELECT e.date, e.practice_id, e.completed, e.count, e.ts,
+            """SELECT e.date, e.practice_id, e.completed, e.count,
+                      e.response_text, e.response_photo, e.response_video_url, e.ts,
                       p.name AS practice_name, p.icon, p.type, p.target, p.unit
                FROM entries e
                JOIN practices p ON p.id = e.practice_id
@@ -2081,6 +2189,9 @@ def admin_user_history(uid: int, user: dict = Depends(current_admin)):
             "practice_unit": r["unit"] or "",
             "completed": bool(r["completed"]),
             "count": r["count"] or 0,
+            "response_text": r["response_text"],
+            "response_photo": r["response_photo"],
+            "response_video_url": r["response_video_url"],
             "ts": r["ts"],
         } for r in entries_rows]
 
@@ -2745,11 +2856,9 @@ def _maybe_send_miss(c, user_id: int, scope_kind: str, scope_id: str,
     """Считает дней пропуска подряд (с последнего done) и шлёт, если попали в value."""
     today_d = datetime.now(tz).date()
     last_done = c.execute(
-        """SELECT MAX(e.date) AS d FROM entries e
-           JOIN practices p ON p.id = e.practice_id
-           WHERE e.user_id=? AND e.practice_id=?
-             AND ((p.type='binary' AND e.completed=1)
-                  OR (p.type='count' AND e.count >= COALESCE(p.target,1)))""",
+        f"""SELECT MAX(e.date) AS d FROM entries e
+            JOIN practices p ON p.id = e.practice_id
+            WHERE e.user_id=? AND e.practice_id=? AND {DONE_SQL}""",
         (user_id, tracked_practice_id),
     ).fetchone()
     if last_done and last_done["d"]:
