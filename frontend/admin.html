@@ -1000,6 +1000,10 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     catalog_hidden: practice.catalog_hidden === true,
     extras: practice.extras || [],
     category_ids: practice.category_ids || [],
+    tag_frequency: practice.tag_frequency || [],
+    tag_activity:  practice.tag_activity  || [],
+    tag_inventory: practice.tag_inventory || [],
+    tag_location:  practice.tag_location  || [],
   });
   const [saving, setSaving] = useState(false);
   const set = (k, val) => setV((s) => ({...s, [k]: val}));
@@ -1089,6 +1093,28 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
 
         <Field label="Категории">
           <CategoryPicker categories={categories} selected={v.category_ids} onToggle={toggleCategory}/>
+        </Field>
+
+        <Field label="Частота / время">
+          <TagEditor value={v.tag_frequency} onChange={(t) => set('tag_frequency', t)}
+            suggestions={['ежедневная','утренняя','дневная','вечерняя','несколько раз в день','несколько раз в неделю','разовая']}/>
+        </Field>
+
+        <Field label="Активность">
+          <TagEditor value={v.tag_activity} onChange={(t) => set('tag_activity', t)}
+            suggestions={['пассивная','спокойная','умеренная','активная','интенсивная']}/>
+        </Field>
+
+        <Field label="Инвентарь">
+          <TagEditor value={v.tag_inventory} onChange={(t) => set('tag_inventory', t)}
+            suggestions={['коврик','скакалка','гантели','мяч','эспандер','скамья','подушка','чётки','блокнот']}
+            allowCustom/>
+        </Field>
+
+        <Field label="Место">
+          <TagEditor value={v.tag_location} onChange={(t) => set('tag_location', t)}
+            suggestions={['дом','улица','зал','природа','офис','где угодно']}
+            allowCustom/>
         </Field>
 
         <Field label="Символ">
@@ -1201,6 +1227,51 @@ const Field = ({ label, children }) => (
     {children}
   </div>
 );
+
+function TagEditor({ value, onChange, suggestions = [], allowCustom = false }) {
+  const [custom, setCustom] = useState('');
+  const selected = value || [];
+  const isOn = (t) => selected.includes(t);
+  const toggle = (t) => onChange(isOn(t) ? selected.filter(x => x !== t) : [...selected, t]);
+  const addCustom = () => {
+    const s = custom.trim();
+    if (!s) return;
+    if (!isOn(s)) onChange([...selected, s]);
+    setCustom('');
+  };
+  // Все теги: подсказки + кастомные (которые не из подсказок)
+  const customTags = selected.filter(t => !suggestions.includes(t));
+  return (
+    <div>
+      <div className="flex flex-wrap gap-1.5">
+        {suggestions.map((t) => (
+          <button key={t} onClick={() => toggle(t)} className="px-3 py-1 rounded-full text-xs"
+            style={{
+              background: isOn(t) ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+              border: `1px solid ${isOn(t) ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.1)'}`,
+              color: isOn(t) ? '#d4a857' : '#f4ead5',
+            }}>{t}</button>
+        ))}
+        {customTags.map((t) => (
+          <button key={t} onClick={() => toggle(t)} className="px-3 py-1 rounded-full text-xs flex items-center gap-1"
+            style={{background:'rgba(212,168,87,0.12)', border:'1px solid rgba(212,168,87,0.4)', color:'#d4a857'}}>
+            {t}<span className="opacity-60">×</span>
+          </button>
+        ))}
+      </div>
+      {allowCustom && (
+        <div className="mt-2 flex gap-2">
+          <input value={custom} onChange={(e) => setCustom(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCustom(); } }}
+            placeholder="свой вариант…"
+            className="input-field flex-1 px-3 py-1.5 rounded-lg text-sm"/>
+          <button onClick={addCustom} className="px-3 py-1.5 rounded-lg text-sm"
+            style={{background:'rgba(212,168,87,0.15)', color:'#d4a857', border:'1px solid rgba(212,168,87,0.4)'}}>+</button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 const TypeBtn = ({ active, onClick, title, sub }) => (
   <button onClick={onClick} className="p-4 rounded-xl text-left"

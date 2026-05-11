@@ -665,27 +665,69 @@ const buildPath = (cats, id) => {
 
 function CatalogTab({ catalog, categories, joined, programsCatalog, joinedPrograms, onJoin, onJoinProgram }) {
   const [currentCatId, setCurrentCatId] = useState(null);
+  const [filters, setFilters] = useState({ frequency: [], activity: [], inventory: [], location: [] });
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const joinedIds = new Set(joined.map((p) => p.id));
   const joinedProgIds = new Set((joinedPrograms || []).map((p) => p.program_id));
   const byParent = useMemo(() => buildCatTree(categories), [categories]);
   const childCats = byParent[currentCatId || 'ROOT'] || [];
   const path = buildPath(categories, currentCatId);
 
-  // Фильтр практик по текущей категории (включая потомков)
+  // Активный счётчик фильтров (для бейджа на кнопке)
+  const filtersActive = filters.frequency.length + filters.activity.length
+                     + filters.inventory.length + filters.location.length;
+
+  // Какие значения тегов вообще существуют в каталоге (для подсказок в шторке)
+  const availableTags = useMemo(() => {
+    const acc = { frequency: new Set(), activity: new Set(), inventory: new Set(), location: new Set() };
+    for (const p of catalog) {
+      (p.tag_frequency || []).forEach(t => acc.frequency.add(t));
+      (p.tag_activity  || []).forEach(t => acc.activity.add(t));
+      (p.tag_inventory || []).forEach(t => acc.inventory.add(t));
+      (p.tag_location  || []).forEach(t => acc.location.add(t));
+    }
+    return { frequency: [...acc.frequency], activity: [...acc.activity],
+             inventory: [...acc.inventory], location: [...acc.location] };
+  }, [catalog]);
+
+  // Фильтр практик: категория + теги. Тег внутри группы — OR, между группами — AND.
   const visiblePractices = useMemo(() => {
-    if (!currentCatId) return catalog;
-    const allowedIds = collectDescendants(byParent, currentCatId);
-    return catalog.filter(p => (p.category_ids || []).some(id => allowedIds.has(id)));
-  }, [catalog, currentCatId, byParent]);
+    let list = catalog;
+    if (currentCatId) {
+      const allowedIds = collectDescendants(byParent, currentCatId);
+      list = list.filter(p => (p.category_ids || []).some(id => allowedIds.has(id)));
+    }
+    const matchGroup = (selected, pTags) =>
+      selected.length === 0 || selected.some(t => (pTags || []).includes(t));
+    return list.filter(p =>
+      matchGroup(filters.frequency, p.tag_frequency) &&
+      matchGroup(filters.activity,  p.tag_activity)  &&
+      matchGroup(filters.inventory, p.tag_inventory) &&
+      matchGroup(filters.location,  p.tag_location)
+    );
+  }, [catalog, currentCatId, byParent, filters]);
 
   return (
     <div className="fade-in pt-6">
       <header className="mb-4">
-        <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Каталог</p>
-        <h1 className="font-display text-4xl font-light leading-tight">
-          {currentCatId ? <span><em style={{color:'#d4a857'}}>{path[path.length-1]?.name}</em></span>
-                        : <>Выбери <em style={{color:'#d4a857'}}>практику</em></>}
-        </h1>
+        <div className="flex items-start justify-between gap-2">
+          <div className="flex-1 min-w-0">
+            <p className="text-xs uppercase tracking-widest opacity-50 mb-1">Каталог</p>
+            <h1 className="font-display text-4xl font-light leading-tight">
+              {currentCatId ? <span><em style={{color:'#d4a857'}}>{path[path.length-1]?.name}</em></span>
+                            : <>Выбери <em style={{color:'#d4a857'}}>практику</em></>}
+            </h1>
+          </div>
+          <button onClick={() => setFiltersOpen(true)}
+            className="px-3 py-1.5 rounded-full text-sm whitespace-nowrap flex items-center gap-1.5"
+            style={{
+              background: filtersActive ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+              border: `1px solid ${filtersActive ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.1)'}`,
+              color: filtersActive ? '#d4a857' : '#f4ead5',
+            }}>
+            фильтры{filtersActive ? ` · ${filtersActive}` : ''}
+          </button>
+        </div>
         {!currentCatId && (
           <p className="opacity-60 text-sm mt-2">Тапни категорию чтобы сузить выбор, или прокрути все практики ниже.</p>
         )}
@@ -789,6 +831,14 @@ function CatalogTab({ catalog, categories, joined, programsCatalog, joinedProgra
                       {p.type === 'count' ? <span>цель: {p.target}{p.unit ? ' '+p.unit : ''}</span> : <span>отметка факта</span>}
                       {p.max_reminders > 0 && <span>• до {p.max_reminders} напом.</span>}
                     </div>
+                    {(p.tag_frequency?.length || p.tag_activity?.length || p.tag_inventory?.length || p.tag_location?.length) ? (
+                      <div className="flex flex-wrap gap-1 mt-2">
+                        {(p.tag_frequency || []).map(t => <Chip key={'f-'+t} text={t}/>)}
+                        {(p.tag_activity  || []).map(t => <Chip key={'a-'+t} text={t}/>)}
+                        {(p.tag_inventory || []).map(t => <Chip key={'i-'+t} text={t} muted/>)}
+                        {(p.tag_location  || []).map(t => <Chip key={'l-'+t} text={t} muted/>)}
+                      </div>
+                    ) : null}
                   </div>
                   {isJoined ? <span className="text-xs px-2 py-1 rounded-full" style={{background:'rgba(212,168,87,0.15)', color:'#d4a857'}}>в моих</span>
                             : <ChevronRight size={20} className="opacity-40"/>}
@@ -798,6 +848,94 @@ function CatalogTab({ catalog, categories, joined, programsCatalog, joinedProgra
           })}
         </div>
       )}
+
+      {filtersOpen && (
+        <FilterSheet
+          available={availableTags}
+          value={filters}
+          onChange={setFilters}
+          onClose={() => setFiltersOpen(false)}/>
+      )}
+    </div>
+  );
+}
+
+function Chip({ text, muted }) {
+  return (
+    <span className="text-[10px] px-2 py-0.5 rounded-full"
+      style={{
+        background: muted ? 'rgba(244,234,213,0.05)' : 'rgba(212,168,87,0.10)',
+        border: `1px solid ${muted ? 'rgba(244,234,213,0.10)' : 'rgba(212,168,87,0.25)'}`,
+        color: muted ? '#f4ead5' : '#d4a857',
+      }}>{text}</span>
+  );
+}
+
+function FilterSheet({ available, value, onChange, onClose }) {
+  const groups = [
+    { key: 'frequency', label: 'Частота / время',
+      fallback: ['ежедневная','утренняя','дневная','вечерняя','несколько раз в день','несколько раз в неделю','разовая'] },
+    { key: 'activity',  label: 'Активность',
+      fallback: ['пассивная','спокойная','умеренная','активная','интенсивная'] },
+    { key: 'inventory', label: 'Инвентарь',
+      fallback: [] },
+    { key: 'location',  label: 'Место',
+      fallback: [] },
+  ];
+  // Реальные опции = подсказки + всё что реально есть в каталоге
+  const optsFor = (g) => {
+    const arr = [...new Set([...(g.fallback || []), ...(available[g.key] || [])])];
+    return arr;
+  };
+  const toggle = (k, t) => {
+    const sel = value[k] || [];
+    onChange({ ...value, [k]: sel.includes(t) ? sel.filter(x => x !== t) : [...sel, t] });
+  };
+  const reset = () => onChange({ frequency: [], activity: [], inventory: [], location: [] });
+  const total = (value.frequency.length + value.activity.length + value.inventory.length + value.location.length);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.6)'}} onClick={onClose}>
+      <div className="w-full max-w-md rounded-t-3xl p-6 fade-in overflow-y-auto" style={{background:'#161824', maxHeight:'92vh'}} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-display text-2xl">Фильтры</h2>
+          <button onClick={onClose} className="opacity-60"><X size={20}/></button>
+        </div>
+        {groups.map((g) => {
+          const opts = optsFor(g);
+          if (opts.length === 0) return null;
+          return (
+            <div key={g.key} className="mb-4">
+              <p className="text-xs uppercase tracking-wider opacity-50 mb-2">{g.label}</p>
+              <div className="flex flex-wrap gap-1.5">
+                {opts.map((t) => {
+                  const on = (value[g.key] || []).includes(t);
+                  return (
+                    <button key={t} onClick={() => toggle(g.key, t)} className="px-3 py-1 rounded-full text-xs"
+                      style={{
+                        background: on ? 'rgba(212,168,87,0.15)' : 'rgba(244,234,213,0.04)',
+                        border: `1px solid ${on ? 'rgba(212,168,87,0.4)' : 'rgba(244,234,213,0.1)'}`,
+                        color: on ? '#d4a857' : '#f4ead5',
+                      }}>{t}</button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+        <div className="flex gap-2 mt-5">
+          <button onClick={reset} disabled={total === 0}
+            className="px-4 py-3 rounded-full text-sm disabled:opacity-40"
+            style={{border:'1px solid rgba(244,234,213,0.15)'}}>
+            Сбросить
+          </button>
+          <button onClick={onClose}
+            className="flex-1 py-3 rounded-full font-medium"
+            style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+            Применить{total ? ` (${total})` : ''}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

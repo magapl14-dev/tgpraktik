@@ -316,6 +316,12 @@ def init_db():
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_photo TEXT")
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_video_url TEXT")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN extras TEXT")
+        # 4 CSV-колонки для фильтров: ежедневная/утренняя/...; пассивная/активная/...;
+        # инвентарь (коврик,скакалка,...); место (дом,улица,...)
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_frequency TEXT")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_activity TEXT")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_inventory TEXT")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_location TEXT")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -763,6 +769,10 @@ class PracticeIn(BaseModel):
     active: bool = True
     catalog_hidden: bool = False
     category_ids: list[str] = Field(default_factory=list)
+    tag_frequency: list[str] = Field(default_factory=list)   # ежедневная / утренняя / ...
+    tag_activity:  list[str] = Field(default_factory=list)   # пассивная / активная / ...
+    tag_inventory: list[str] = Field(default_factory=list)   # коврик / скакалка / ...
+    tag_location:  list[str] = Field(default_factory=list)   # дом / улица / ...
 
 
 class ProgramLevelIn(BaseModel):
@@ -1004,6 +1014,27 @@ def _parse_extras(value) -> list:
     return [x.strip() for x in str(value).split(",") if x.strip() in allowed]
 
 
+def _parse_tags(value) -> list:
+    """Парсит CSV тегов из БД в список. Пустые элементы фильтруются."""
+    if not value:
+        return []
+    return [x.strip() for x in str(value).split(",") if x.strip()]
+
+
+def _tags_to_csv(tags: list) -> str:
+    """Список тегов → CSV. Чистит пустые и обрезает по 64 символа."""
+    if not tags:
+        return ""
+    out = []
+    seen = set()
+    for t in tags:
+        s = (str(t) or "").strip()[:64]
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return ",".join(out)
+
+
 def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
     return {
         "id": row["id"],
@@ -1024,6 +1055,10 @@ def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
         "active": bool(row["active"]),
         "catalog_hidden": bool(row["catalog_hidden"]) if "catalog_hidden" in row.keys() else False,
         "category_ids": category_ids or [],
+        "tag_frequency": _parse_tags(row["tag_frequency"]) if "tag_frequency" in row.keys() else [],
+        "tag_activity":  _parse_tags(row["tag_activity"])  if "tag_activity"  in row.keys() else [],
+        "tag_inventory": _parse_tags(row["tag_inventory"]) if "tag_inventory" in row.keys() else [],
+        "tag_location":  _parse_tags(row["tag_location"])  if "tag_location"  in row.keys() else [],
     }
 
 
@@ -2057,12 +2092,15 @@ def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
             """INSERT INTO practices
                (id, name, description, type, extras, target, unit, icon, palette, media_url, media_label,
                 photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
+                tag_frequency, tag_activity, tag_inventory, tag_location,
                 created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden),
+             _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
+             _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
              datetime.now(TZ).isoformat(), user["id"]),
         )
         _save_practice_categories(c, pid, body.category_ids)
@@ -2081,11 +2119,16 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
         c.execute(
             """UPDATE practices SET name=?, description=?, type=?, extras=?, target=?, unit=?, icon=?,
                palette=?, media_url=?, media_label=?, photo=?, max_reminders=?,
-               reminder_from=?, reminder_to=?, active=?, catalog_hidden=? WHERE id=?""",
+               reminder_from=?, reminder_to=?, active=?, catalog_hidden=?,
+               tag_frequency=?, tag_activity=?, tag_inventory=?, tag_location=?
+               WHERE id=?""",
             (body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
-             int(body.active), int(body.catalog_hidden), pid),
+             int(body.active), int(body.catalog_hidden),
+             _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
+             _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
+             pid),
         )
         _save_practice_categories(c, pid, body.category_ids)
     return {"ok": True}
