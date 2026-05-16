@@ -9,6 +9,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
   html, body { background: #0a0c14; }
@@ -18,6 +19,18 @@
   .card { background: rgba(255,250,235,0.04); border: 1px solid rgba(244,234,213,0.08); }
   .input-field { background: rgba(255,250,235,0.04); border: 1px solid rgba(244,234,213,0.12); color: #f4ead5; transition: all 0.2s; }
   .input-field:focus { outline: none; border-color: rgba(212,168,87,0.5); }
+  .md-body { font-size: 13px; line-height: 1.5; color: rgba(244,234,213,0.88); }
+  .md-body > *:first-child { margin-top: 0; } .md-body > *:last-child { margin-bottom: 0; }
+  .md-body p { margin: 0.5em 0; }
+  .md-body h1, .md-body h2, .md-body h3 { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 500; margin: 0.8em 0 0.3em; color: #f4ead5; }
+  .md-body h1 { font-size: 1.35em; } .md-body h2 { font-size: 1.2em; } .md-body h3 { font-size: 1.05em; }
+  .md-body strong { color: #f4ead5; font-weight: 600; }
+  .md-body ul, .md-body ol { margin: 0.4em 0; padding-left: 1.25em; }
+  .md-body li { margin: 0.15em 0; }
+  .md-body ul li::marker, .md-body ol li::marker { color: #d4a857; }
+  .md-body blockquote { margin: 0.5em 0; padding: 0.25em 0.7em; border-left: 3px solid rgba(212,168,87,0.45); background: rgba(212,168,87,0.05); border-radius: 0 6px 6px 0; }
+  .md-body code { background: rgba(244,234,213,0.08); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; font-family: ui-monospace, monospace; }
+  .md-body a { color: #d4a857; text-decoration: underline; }
   select.input-field option { background: #161824; color: #f4ead5; }
   select.input-field optgroup { background: #0d1018; color: #d4a857; font-style: normal; font-weight: 600; }
   .fade-in { animation: fadeIn 0.3s ease-out; }
@@ -32,7 +45,7 @@
 </div>
 
 <script type="text/babel" data-presets="react">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useRef, useMemo } = React;
 
 const tg = window.Telegram?.WebApp;
 const initData = tg?.initData || '';
@@ -514,8 +527,8 @@ function ProgramForm({ program, practices, onClose, onSaved }) {
         </Field>
 
         <Field label="Описание">
-          <textarea value={v.description} onChange={(e) => set('description', e.target.value)} rows={3}
-            placeholder="О чём программа, для кого, какой результат..." className="input-field w-full px-4 py-3 rounded-xl resize-none"/>
+          <MarkdownTextarea value={v.description} onChange={(val) => set('description', val)}
+                            placeholder="О чём программа, для кого, какой результат..."/>
         </Field>
 
         <Field label="Символ">
@@ -1078,8 +1091,8 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
         </Field>
 
         <Field label="Описание">
-          <textarea value={v.description} onChange={(e) => set('description', e.target.value)} rows={3}
-            placeholder="Зачем эта практика, инструкция..." className="input-field w-full px-4 py-3 rounded-xl resize-none"/>
+          <MarkdownTextarea value={v.description} onChange={(val) => set('description', val)}
+                            placeholder={"Зачем эта практика, инструкция...\n\nПоддерживается Markdown:\n**жирный**, *курсив*, # Заголовок,\n- список, > цитата, [ссылка](https://...)"}/>
         </Field>
 
         <Field label="Основной тип (обязательно для «день засчитан»)">
@@ -1400,6 +1413,79 @@ const Field = ({ label, children }) => (
     {children}
   </div>
 );
+
+const renderMarkdown = (text) => {
+  if (!text) return '';
+  try {
+    if (typeof marked !== 'undefined') return marked.parse(String(text), { breaks: true, gfm: true });
+  } catch (e) {}
+  return String(text).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])).replace(/\n/g, '<br>');
+};
+
+// Textarea с переключателем «текст / предпросмотр» и кнопками-подсказками
+// (жирный, курсив, заголовок, список, цитата, ссылка) — вставляют markdown-разметку вокруг выделения.
+function MarkdownTextarea({ value, onChange, placeholder, rows = 8 }) {
+  const [tab, setTab] = useState('edit');
+  const ref = useRef(null);
+  const wrap = (before, after = before, fallback = '') => {
+    const el = ref.current; if (!el) return;
+    const start = el.selectionStart, end = el.selectionEnd;
+    const sel = value.slice(start, end) || fallback;
+    const next = value.slice(0, start) + before + sel + after + value.slice(end);
+    onChange(next);
+    setTimeout(() => {
+      el.focus();
+      const pos = start + before.length + sel.length;
+      el.setSelectionRange(pos, pos);
+    }, 0);
+  };
+  const linePrefix = (prefix) => {
+    const el = ref.current; if (!el) return;
+    const start = el.selectionStart, end = el.selectionEnd;
+    const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+    const lineEnd = value.indexOf('\n', end); const realEnd = lineEnd === -1 ? value.length : lineEnd;
+    const block = value.slice(lineStart, realEnd);
+    const newBlock = block.split('\n').map((ln) => prefix + ln).join('\n');
+    onChange(value.slice(0, lineStart) + newBlock + value.slice(realEnd));
+  };
+  const btn = "px-2 py-1 rounded-md text-xs opacity-70 hover:opacity-100";
+  const btnStyle = { background: 'rgba(244,234,213,0.06)', border: '1px solid rgba(244,234,213,0.1)' };
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-1 mb-2">
+        <button type="button" className={btn} style={btnStyle} onClick={() => wrap('**', '**', 'жирный')}><b>B</b></button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => wrap('*', '*', 'курсив')}><i>I</i></button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => linePrefix('## ')}>H</button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => linePrefix('- ')}>• список</button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => linePrefix('1. ')}>1. список</button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => linePrefix('> ')}>“ цитата</button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => wrap('[', '](https://)', 'ссылка')}>🔗</button>
+        <button type="button" className={btn} style={btnStyle} onClick={() => wrap('`', '`', 'code')}>{'</>'}</button>
+        <div className="ml-auto flex gap-1">
+          <button type="button" onClick={() => setTab('edit')} className={btn}
+                  style={tab === 'edit' ? {background:'rgba(212,168,87,0.18)', color:'#d4a857', border:'1px solid rgba(212,168,87,0.4)'} : btnStyle}>текст</button>
+          <button type="button" onClick={() => setTab('preview')} className={btn}
+                  style={tab === 'preview' ? {background:'rgba(212,168,87,0.18)', color:'#d4a857', border:'1px solid rgba(212,168,87,0.4)'} : btnStyle}>превью</button>
+        </div>
+      </div>
+      {tab === 'edit' ? (
+        <textarea ref={ref} value={value} onChange={(e) => onChange(e.target.value)} rows={rows}
+          placeholder={placeholder}
+          className="input-field w-full px-4 py-3 rounded-xl resize-y font-mono"
+          style={{fontSize: '13px', lineHeight: 1.5}}/>
+      ) : (
+        <div className="input-field w-full px-4 py-3 rounded-xl" style={{minHeight: `${rows * 1.5 + 1.5}em`}}>
+          {value
+            ? <div className="md-body" dangerouslySetInnerHTML={{__html: renderMarkdown(value)}}/>
+            : <span className="opacity-40 text-sm">Здесь появится превью оформленного текста</span>}
+        </div>
+      )}
+      <p className="text-[11px] opacity-50 mt-1.5">
+        Поддерживается Markdown: <b>**жирный**</b>, <i>*курсив*</i>, <code>## заголовок</code>, <code>- список</code>, <code>&gt; цитата</code>, <code>[ссылка](https://...)</code>
+      </p>
+    </div>
+  );
+}
 
 function TagEditor({ value, onChange, suggestions = [], allowCustom = false }) {
   const [custom, setCustom] = useState('');

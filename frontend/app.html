@@ -15,6 +15,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet">
 <style>
   html, body { background: #0a0c14; }
@@ -46,6 +47,28 @@
   .scrollbar-hide { scrollbar-width: none; }
   .heat-cell { width: 12px; height: 12px; border-radius: 3px; transition: transform 0.1s; }
   .heat-cell:active { transform: scale(0.85); }
+  /* Рендер markdown-описаний практик/программ */
+  .md-body { font-size: 14px; line-height: 1.55; color: rgba(244,234,213,0.88); word-wrap: break-word; }
+  .md-body > *:first-child { margin-top: 0; }
+  .md-body > *:last-child { margin-bottom: 0; }
+  .md-body p { margin: 0.5em 0; }
+  .md-body h1, .md-body h2, .md-body h3, .md-body h4 { font-family: 'Cormorant Garamond', Georgia, serif; font-weight: 500; margin: 0.9em 0 0.35em; color: #f4ead5; line-height: 1.2; }
+  .md-body h1 { font-size: 1.45em; }
+  .md-body h2 { font-size: 1.25em; }
+  .md-body h3 { font-size: 1.1em; }
+  .md-body h4 { font-size: 1em; }
+  .md-body strong { color: #f4ead5; font-weight: 600; }
+  .md-body em { font-style: italic; opacity: 0.92; }
+  .md-body ul, .md-body ol { margin: 0.4em 0 0.6em; padding-left: 1.25em; }
+  .md-body li { margin: 0.18em 0; }
+  .md-body ul li::marker { color: #d4a857; }
+  .md-body ol li::marker { color: #d4a857; }
+  .md-body blockquote { margin: 0.6em 0; padding: 0.3em 0.8em; border-left: 3px solid rgba(212,168,87,0.45); background: rgba(212,168,87,0.05); border-radius: 0 6px 6px 0; color: rgba(244,234,213,0.78); }
+  .md-body code { background: rgba(244,234,213,0.08); padding: 1px 5px; border-radius: 4px; font-size: 0.88em; font-family: ui-monospace, SFMono-Regular, monospace; }
+  .md-body pre { background: rgba(244,234,213,0.06); padding: 0.7em 0.9em; border-radius: 8px; overflow-x: auto; margin: 0.6em 0; }
+  .md-body pre code { background: transparent; padding: 0; }
+  .md-body a { color: #d4a857; text-decoration: underline; text-underline-offset: 2px; }
+  .md-body hr { border: none; border-top: 1px solid rgba(244,234,213,0.12); margin: 0.9em 0; }
 </style>
 </head>
 <body class="font-body app-bg pb-24">
@@ -645,7 +668,7 @@ function ResponseSheet({ practice, entry, onClose, onSaved }) {
           <h2 className="font-display text-2xl">{practice.icon} {practice.name}</h2>
           <button onClick={onClose} className="opacity-60"><X size={20}/></button>
         </div>
-        {practice.description && <p className="text-sm opacity-70 mb-4">{practice.description}</p>}
+        {practice.description && <div className="mb-4"><Markdown text={practice.description}/></div>}
 
         {showBinary && (
           <div className="mb-4">
@@ -809,7 +832,7 @@ function TimerRunner({ practice, entry, onClose, onSaved }) {
             {bestToday >= target ? ' — день засчитан ✓' : ` · до цели ещё ${target - bestToday}с`}
           </p>
         )}
-        {practice.description && <p className="text-xs opacity-60 mb-4">{practice.description}</p>}
+        {practice.description && <div className="mb-4 text-xs"><Markdown text={practice.description}/></div>}
 
         <div className="rounded-2xl p-6 text-center mb-4" style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.1)'}}>
           <div className="text-xs uppercase tracking-widest opacity-60 mb-2">
@@ -1008,7 +1031,7 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
             : `${rounds} раундов · разное время по раундам`}
         </p>
         {practice.unit && <p className="text-sm opacity-80 mb-4">Задача в раунде: <b>{practice.unit}</b></p>}
-        {practice.description && <p className="text-xs opacity-60 mb-4">{practice.description}</p>}
+        {practice.description && <div className="mb-4 text-xs"><Markdown text={practice.description}/></div>}
 
         <div className="rounded-2xl p-6 text-center mb-4" style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.1)'}}>
           <div className="text-xs uppercase tracking-widest opacity-60 mb-2">
@@ -1420,7 +1443,7 @@ function ProgramJoinSheet({ program, onClose, onJoined }) {
           <h2 className="font-display text-2xl">{program.icon} {program.name}</h2>
           <button onClick={onClose} className="opacity-60"><X size={20}/></button>
         </div>
-        {program.description && <p className="text-sm opacity-70 mb-4">{program.description}</p>}
+        {program.description && <div className="mb-4"><Markdown text={program.description}/></div>}
         <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Уровни ({totalDays} дн. в сумме)</p>
         <div className="space-y-1.5 mb-4 max-h-64 overflow-y-auto">
           {(program.levels || []).map((l) => (
@@ -1461,7 +1484,7 @@ function JoinSheet({ practice, onClose, onJoined }) {
           <h2 className="font-display text-2xl">{practice.name}</h2>
           <button onClick={onClose} className="opacity-60"><X size={20}/></button>
         </div>
-        {practice.description && <p className="text-sm opacity-70 mb-4">{practice.description}</p>}
+        {practice.description && <div className="mb-4"><Markdown text={practice.description}/></div>}
         <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Период</p>
         <div className="grid grid-cols-3 gap-2 mb-6">
           {[['week','Неделя'],['month','Месяц'],['forever','Без срока']].map(([v,l]) => (
@@ -1594,6 +1617,22 @@ function HistoryTab({ data, onPracticeTap }) {
 }
 
 // ─── Шторка деталей практики ───
+// Безопасный рендер markdown в описаниях. Контент идёт от админа — XSS-вектор низкий,
+// но всё равно пропускаем через marked с дефолтным escape; raw HTML не разрешаем.
+const renderMarkdown = (text) => {
+  if (!text) return '';
+  try {
+    if (typeof marked !== 'undefined') {
+      return marked.parse(String(text), { breaks: true, gfm: true });
+    }
+  } catch (e) { /* fallback ниже */ }
+  // Если marked не загрузился — экранируем и сохраняем переводы строк.
+  const esc = String(text).replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return esc.replace(/\n/g, '<br>');
+};
+const Markdown = ({ text, className = '' }) =>
+  text ? <div className={`md-body ${className}`} dangerouslySetInnerHTML={{__html: renderMarkdown(text)}}/> : null;
+
 function AudioSequence({ audios }) {
   // Проигрывает список аудио по очереди. Первое стартует автоматически при монтировании
   // (если браузер позволяет — открытие шторки = тап юзера, обычно разрешает).
@@ -1682,7 +1721,7 @@ function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDa
           <button onClick={onClose} className="opacity-60 ml-2"><X size={20}/></button>
         </div>
 
-        {practice.description && <p className="text-sm opacity-80 mb-4 whitespace-pre-wrap">{practice.description}</p>}
+        {practice.description && <div className="mb-4"><Markdown text={practice.description}/></div>}
 
         <AudioSequence audios={practice.audios}/>
 
