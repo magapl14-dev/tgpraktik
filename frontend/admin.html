@@ -1225,10 +1225,9 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
                         <button type="button" onClick={() => set('rounds_plan', v.rounds_plan.filter((_,j) => j !== i))}
                                 className="ml-auto px-2 py-1 rounded-md text-sm opacity-60 hover:opacity-100">×</button>
                       </div>
-                      <input type="url" value={r.sound_url || ''}
-                             onChange={(e) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, sound_url: e.target.value} : x))}
-                             placeholder="звук раунда (необяз., url mp3) — иначе стандартный бип"
-                             className="input-field w-full px-3 py-1.5 rounded-md text-xs"/>
+                      <AudioPicker url={r.sound_url || ''}
+                                   onChange={(url) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, sound_url: url} : x))}
+                                   placeholder="звук раунда (необяз.) — иначе стандартный бип"/>
                     </div>
                   ))}
                   {v.rounds_plan.length < 100 && (
@@ -1318,20 +1317,21 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
         <Field label="Аудио при старте практики (до 3 шт., проигрываются по очереди)">
           <div className="space-y-2">
             {v.audios.map((a, i) => (
-              <div key={i} className="flex gap-2 items-start">
-                <div className="flex-1 space-y-1">
-                  <input type="url" value={a.url || ''}
-                         onChange={(e) => set('audios', v.audios.map((x, j) => j===i ? {...x, url: e.target.value} : x))}
-                         placeholder="https://.../audio.mp3"
-                         className="input-field w-full px-4 py-2 rounded-xl"/>
-                  <input type="text" value={a.label || ''}
-                         onChange={(e) => set('audios', v.audios.map((x, j) => j===i ? {...x, label: e.target.value} : x))}
-                         placeholder="Название (необязат.)"
-                         className="input-field w-full px-4 py-2 rounded-xl text-sm"/>
+              <div key={i} className="rounded-xl p-2.5"
+                   style={{background:'rgba(244,234,213,0.03)', border:'1px solid rgba(244,234,213,0.08)'}}>
+                <div className="flex items-center justify-between mb-1.5">
+                  <span className="text-xs opacity-60">Аудио #{i+1}</span>
+                  <button type="button" onClick={() => set('audios', v.audios.filter((_, j) => j !== i))}
+                          className="text-xs px-2 py-0.5 rounded-md opacity-60 hover:opacity-100">× удалить</button>
                 </div>
-                <button type="button" onClick={() => set('audios', v.audios.filter((_, j) => j !== i))}
-                        className="px-3 py-2 rounded-xl opacity-60 hover:opacity-100"
-                        style={{border:'1px solid rgba(244,234,213,0.15)'}}>×</button>
+                <AudioPicker url={a.url || ''}
+                             onChange={(url) => set('audios', v.audios.map((x, j) => j===i ? {...x, url} : x))}
+                             onLabel={{current: a.label, set: (label) => set('audios', v.audios.map((x, j) => j===i ? {...x, label} : x))}}
+                             placeholder="URL аудио или загрузи файл/импортируй с Я.Диска"/>
+                <input type="text" value={a.label || ''}
+                       onChange={(e) => set('audios', v.audios.map((x, j) => j===i ? {...x, label: e.target.value} : x))}
+                       placeholder="Название (необязат.)"
+                       className="input-field w-full px-3 py-2 rounded-lg text-xs mt-1.5"/>
               </div>
             ))}
             {v.audios.length < 3 && (
@@ -1403,6 +1403,83 @@ function CategoryPicker({ categories, selected, onToggle }) {
   return (
     <div className="card rounded-xl p-3 max-h-64 overflow-y-auto">
       {tree.map(renderNode)}
+    </div>
+  );
+}
+
+// Подбор аудио: URL вручную / импорт с Яндекс.Диска / загрузка файла на сервер.
+// Готовый url передаём наружу через onChange. Все три способа дают на выходе
+// либо внешний URL, либо локальный /photos/audios/<file>.
+function AudioPicker({ url, onChange, onLabel, placeholder = 'URL аудио или загрузи файл' }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+
+  const uploadFile = async (file) => {
+    if (!file) return;
+    setErr(''); setBusy(true);
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      const r = await fetch('/api/admin/audio/upload', {
+        method: 'POST', body: fd,
+        headers: { 'X-Init-Data': initData, 'X-User-TZ': userTz },
+      });
+      if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || `HTTP ${r.status}`);
+      const j = await r.json();
+      onChange(j.url);
+      if (onLabel && j.label && !onLabel.current) onLabel.set(j.label);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+
+  const importYandex = async () => {
+    const link = prompt('Вставь публичную ссылку Яндекс.Диска (https://disk.yandex.ru/d/... или /i/...):');
+    if (!link) return;
+    setErr(''); setBusy(true);
+    try {
+      const r = await api('/api/admin/audio/import_yandex', {
+        method: 'POST', body: JSON.stringify({ url: link.trim() }),
+      });
+      onChange(r.url);
+      if (onLabel && r.label && !onLabel.current) onLabel.set(r.label);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const isLocal = url && url.startsWith('/photos/');
+  return (
+    <div>
+      <div className="flex gap-1 mb-1.5 flex-wrap">
+        <button type="button" disabled={busy} onClick={() => fileRef.current?.click()}
+                className="text-xs px-2.5 py-1.5 rounded-lg opacity-80 hover:opacity-100 disabled:opacity-40"
+                style={{background:'rgba(212,168,87,0.1)', border:'1px solid rgba(212,168,87,0.3)', color:'#d4a857'}}>
+          {busy ? '...' : '📤 загрузить файл'}
+        </button>
+        <button type="button" disabled={busy} onClick={importYandex}
+                className="text-xs px-2.5 py-1.5 rounded-lg opacity-80 hover:opacity-100 disabled:opacity-40"
+                style={{background:'rgba(127,179,211,0.1)', border:'1px solid rgba(127,179,211,0.3)', color:'#b8d3e6'}}>
+          {busy ? '...' : '💾 с Яндекс.Диска'}
+        </button>
+        {url && (
+          <button type="button" onClick={() => onChange('')}
+                  className="text-xs px-2.5 py-1.5 rounded-lg opacity-50 hover:opacity-100">
+            очистить
+          </button>
+        )}
+      </div>
+      <input type="file" accept="audio/*" ref={fileRef} className="hidden"
+             onChange={(e) => uploadFile(e.target.files?.[0])}/>
+      <input type="url" value={url || ''}
+             onChange={(e) => onChange(e.target.value)}
+             placeholder={placeholder}
+             className="input-field w-full px-3 py-2 rounded-lg text-xs"/>
+      {url && (
+        <div className="mt-1.5">
+          <audio src={url} controls preload="none" style={{width:'100%', height:'32px'}}/>
+          {isLocal && <p className="text-[10px] opacity-50 mt-0.5">Хранится на сервере: {url}</p>}
+        </div>
+      )}
+      {err && <p className="text-[11px] mt-1" style={{color:'#e88080'}}>{err}</p>}
     </div>
   );
 }

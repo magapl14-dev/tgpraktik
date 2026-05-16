@@ -2195,6 +2195,91 @@ def admin_update_category(cid: str, body: CategoryIn, user: dict = Depends(curre
     return {"ok": True}
 
 
+AUDIO_DIR = PHOTOS_DIR / "audios"
+AUDIO_EXT_BY_MIME = {
+    "audio/mpeg": "mp3", "audio/mp3": "mp3",
+    "audio/ogg": "ogg", "audio/wav": "wav", "audio/x-wav": "wav",
+    "audio/aac": "aac", "audio/mp4": "m4a", "audio/x-m4a": "m4a",
+    "audio/webm": "webm", "audio/flac": "flac",
+}
+ALLOWED_AUDIO_EXT = {"mp3", "ogg", "wav", "aac", "m4a", "webm", "flac"}
+MAX_AUDIO_BYTES = 30 * 1024 * 1024  # 30 MB
+
+
+def _audio_ext_from_name(filename: str) -> Optional[str]:
+    if not filename or "." not in filename:
+        return None
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return ext if ext in ALLOWED_AUDIO_EXT else None
+
+
+@app.post("/api/admin/audio/upload")
+async def admin_audio_upload(file: UploadFile = File(...), user: dict = Depends(current_admin)):
+    """Принимает аудио-файл, сохраняет на диск, возвращает {url}.
+    Лимит 30 МБ, разрешённые форматы: mp3/ogg/wav/aac/m4a/webm/flac."""
+    ext = AUDIO_EXT_BY_MIME.get((file.content_type or "").lower()) or _audio_ext_from_name(file.filename or "")
+    if not ext:
+        raise HTTPException(400, "Неподдерживаемый формат аудио")
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Пустой файл")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(413, f"Файл слишком большой (>{MAX_AUDIO_BYTES // (1024*1024)} МБ)")
+    fname = f"{secrets.token_hex(8)}.{ext}"
+    (AUDIO_DIR / fname).write_bytes(data)
+    return {"url": f"/photos/audios/{fname}", "label": (file.filename or "").rsplit(".", 1)[0][:200]}
+
+
+class YandexImportIn(BaseModel):
+    url: str
+
+
+@app.post("/api/admin/audio/import_yandex")
+def admin_audio_import_yandex(body: YandexImportIn, user: dict = Depends(current_admin)):
+    """Резолвит публичную ссылку Яндекс.Диска через cloud-api, скачивает файл и сохраняет
+    локально. Возвращает {url, label}. Работает только с публичными ссылками без пароля."""
+    import urllib.request, urllib.parse, json as _json
+    public_url = (body.url or "").strip()
+    if not public_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "Ожидается публичная ссылка Яндекс.Диска")
+    # 1) узнать прямой href и имя файла
+    api = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=" + urllib.parse.quote(public_url, safe="")
+    try:
+        with urllib.request.urlopen(api, timeout=15) as r:
+            meta = _json.loads(r.read().decode("utf-8"))
+        href = meta.get("href")
+        if not href:
+            raise ValueError("no href")
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось получить ссылку с Яндекс.Диска: {e}")
+    # 2) узнать имя/тип через meta-эндпоинт (необязательно — но для расширения файла)
+    name = ""
+    try:
+        meta_api = "https://cloud-api.yandex.net/v1/disk/public/resources?public_key=" + urllib.parse.quote(public_url, safe="")
+        with urllib.request.urlopen(meta_api, timeout=15) as r:
+            info = _json.loads(r.read().decode("utf-8"))
+        name = info.get("name") or ""
+    except Exception:
+        pass
+    ext = _audio_ext_from_name(name) or "mp3"
+    # 3) скачать сам файл (с ограничением размера)
+    try:
+        req = urllib.request.Request(href, headers={"User-Agent": "practices-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=60) as r:
+            data = r.read(MAX_AUDIO_BYTES + 1)
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось скачать файл: {e}")
+    if not data:
+        raise HTTPException(400, "Файл пустой")
+    if len(data) > MAX_AUDIO_BYTES:
+        raise HTTPException(413, f"Файл слишком большой (>{MAX_AUDIO_BYTES // (1024*1024)} МБ)")
+    AUDIO_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f"{secrets.token_hex(8)}.{ext}"
+    (AUDIO_DIR / fname).write_bytes(data)
+    return {"url": f"/photos/audios/{fname}", "label": (name.rsplit(".", 1)[0] if name else "")[:200]}
+
+
 @app.delete("/api/admin/categories/{cid}")
 def admin_delete_category(cid: str, user: dict = Depends(current_admin)):
     """Каскадно удаляет потомков и связи с практиками (FK ON DELETE CASCADE)."""
