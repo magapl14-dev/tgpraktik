@@ -1787,8 +1787,8 @@ function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDa
         )}
 
         {/* Запуск практики прямо из шторки. Тип определяет действие. */}
-        <div className="mb-5 p-4 rounded-2xl" style={{background:'rgba(212,168,87,0.06)', border:`1px solid ${accent}33`}}>
-          <p className="text-xs uppercase tracking-wider opacity-60 mb-2">Сегодня</p>
+        <div className="mb-5 p-4 rounded-2xl space-y-2" style={{background:'rgba(212,168,87,0.06)', border:`1px solid ${accent}33`}}>
+          <p className="text-xs uppercase tracking-wider opacity-60 mb-1">Сегодня</p>
           {practice.type === 'rounds' && (
             <button onClick={() => setRoundsOpen(true)}
                     className="w-full py-3.5 rounded-full font-medium text-base"
