@@ -1683,6 +1683,31 @@ function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDa
   const periodEnd = practice.period_end;
   const daysLeft = periodEnd ? Math.ceil((parseYmd(periodEnd) - parseYmd(today)) / 86400000) : null;
 
+  // Сегодняшняя запись + запуск практики прямо из шторки (раунды/таймер/факт/счётчик/ответ).
+  const todayEntry = entries?.[`${today}_${practice.id}`];
+  const todayDone = isDone(practice, todayEntry);
+  const isResponseType = practice.type === 'text' || practice.type === 'photo' || practice.type === 'video';
+  const hasExtras = (practice.extras || []).length > 0;
+  const [roundsOpen, setRoundsOpen] = useState(false);
+  const [timerOpen,  setTimerOpen]  = useState(false);
+  const [responseOpen, setResponseOpen] = useState(false);
+
+  const markBinary = async () => {
+    setBusy(true);
+    try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+      practice_id: practice.id, completed: !todayDone }) }); await onChange(); }
+    catch (e) { alert(e.message); }
+    finally { setBusy(false); }
+  };
+  const incCount = async (delta) => {
+    setBusy(true);
+    const next = Math.max(0, (todayEntry?.count || 0) + delta);
+    try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+      practice_id: practice.id, count: next }) }); await onChange(); }
+    catch (e) { alert(e.message); }
+    finally { setBusy(false); }
+  };
+
   const leave = async () => {
     if (!confirm(`Выйти из практики «${practice.name}»? Прогресс останется в истории.`)) return;
     setBusy(true);
@@ -1736,6 +1761,71 @@ function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDa
           </a>
         )}
 
+        {/* Запуск практики прямо из шторки. Тип определяет действие. */}
+        <div className="mb-5 p-4 rounded-2xl" style={{background:'rgba(212,168,87,0.06)', border:`1px solid ${accent}33`}}>
+          <p className="text-xs uppercase tracking-wider opacity-60 mb-2">Сегодня</p>
+          {practice.type === 'rounds' && (
+            <button onClick={() => setRoundsOpen(true)}
+                    className="w-full py-3.5 rounded-full font-medium text-base"
+                    style={{background: todayDone ? 'rgba(212,168,87,0.15)' : `linear-gradient(135deg, ${accent}, #b8902f)`,
+                            color: todayDone ? '#d4a857' : '#1a1410',
+                            border: todayDone ? '1px solid rgba(212,168,87,0.4)' : 'none'}}>
+              {todayDone ? '✓ Пройдено · ещё раз' : '▶ Начать раунды'}
+            </button>
+          )}
+          {practice.type === 'timer' && (
+            <button onClick={() => setTimerOpen(true)}
+                    className="w-full py-3.5 rounded-full font-medium text-base"
+                    style={{background: todayDone ? 'rgba(212,168,87,0.15)' : `linear-gradient(135deg, ${accent}, #b8902f)`,
+                            color: todayDone ? '#d4a857' : '#1a1410',
+                            border: todayDone ? '1px solid rgba(212,168,87,0.4)' : 'none'}}>
+              {todayDone ? `✓ ${todayEntry?.count || 0}с · ещё` : (todayEntry?.count ? `▶ Продолжить (${todayEntry.count}с)` : '▶ Запустить таймер')}
+            </button>
+          )}
+          {practice.type === 'binary' && (
+            <button onClick={markBinary} disabled={busy}
+                    className="w-full py-3.5 rounded-full font-medium text-base"
+                    style={{background: todayDone ? 'rgba(212,168,87,0.15)' : `linear-gradient(135deg, ${accent}, #b8902f)`,
+                            color: todayDone ? '#d4a857' : '#1a1410',
+                            border: todayDone ? '1px solid rgba(212,168,87,0.4)' : 'none'}}>
+              {todayDone ? '✓ Сделано · отменить' : '✓ Отметить сделанным'}
+            </button>
+          )}
+          {practice.type === 'count' && (
+            <div>
+              <div className="flex items-center justify-center gap-4 mb-2">
+                <button onClick={() => incCount(-1)} disabled={busy || (todayEntry?.count || 0) === 0}
+                        className="w-12 h-12 rounded-full flex items-center justify-center disabled:opacity-30"
+                        style={{background:'rgba(244,234,213,0.06)'}}><Minus size={20}/></button>
+                <div className="font-display text-4xl text-center" style={{color: todayDone ? '#d4a857' : '#f4ead5'}}>
+                  {todayEntry?.count || 0}<span className="text-lg opacity-50">/{practice.target}</span>
+                </div>
+                <button onClick={() => incCount(1)} disabled={busy}
+                        className="w-12 h-12 rounded-full flex items-center justify-center"
+                        style={{background: todayDone ? `linear-gradient(135deg, ${accent}, #b8902f)` : 'rgba(244,234,213,0.08)',
+                                color: todayDone ? '#1a1410' : '#f4ead5'}}><Plus size={20} sw={2.5}/></button>
+              </div>
+              {practice.unit && <p className="text-xs opacity-60 text-center">{practice.unit}</p>}
+            </div>
+          )}
+          {(isResponseType || (hasExtras && !(practice.type === 'rounds' || practice.type === 'timer'))) && (
+            <button onClick={() => setResponseOpen(true)}
+                    className="w-full py-3.5 rounded-full font-medium text-base"
+                    style={{background: todayDone ? 'rgba(212,168,87,0.15)' : `linear-gradient(135deg, ${accent}, #b8902f)`,
+                            color: todayDone ? '#d4a857' : '#1a1410',
+                            border: todayDone ? '1px solid rgba(212,168,87,0.4)' : 'none'}}>
+              {todayDone ? '✓ Ответ есть · изменить' : '✍ Заполнить ответ'}
+            </button>
+          )}
+          {(practice.type === 'rounds' || practice.type === 'timer') && hasExtras && (
+            <button onClick={() => setResponseOpen(true)}
+                    className="w-full mt-2 py-2.5 rounded-full text-sm"
+                    style={{background:'rgba(244,234,213,0.05)', border:'1px solid rgba(244,234,213,0.15)', color:'#f4ead5'}}>
+              ✍ Добавить ответ {todayDone ? '· изменить' : ''}
+            </button>
+          )}
+        </div>
+
         {periodEnd !== undefined && (
           <div className="text-xs opacity-60 mb-4">
             {practice.period_end === null ? 'Без срока окончания' :
@@ -1785,6 +1875,29 @@ function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDa
           <Logout size={14}/> Выйти из практики
         </button>
       </div>
+      {roundsOpen && (
+        <RoundsRunner practice={practice} done={todayDone}
+          onClose={() => { setRoundsOpen(false); if (hasExtras) setResponseOpen(true); }}
+          onFinished={async () => {
+            try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+              practice_id: practice.id, completed: true }) }); } catch (e) { alert(e.message); }
+            await onChange();
+          }}/>
+      )}
+      {timerOpen && (
+        <TimerRunner practice={practice} entry={todayEntry}
+          onClose={() => { setTimerOpen(false); if (hasExtras) setResponseOpen(true); }}
+          onSaved={async (seconds) => {
+            try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+              practice_id: practice.id, count: seconds }) }); } catch (e) { alert(e.message); }
+            await onChange();
+          }}/>
+      )}
+      {responseOpen && (
+        <ResponseSheet practice={practice} entry={todayEntry}
+          onClose={() => setResponseOpen(false)}
+          onSaved={async () => { setResponseOpen(false); await onChange(); }}/>
+      )}
     </div>
   );
 }
