@@ -944,13 +944,21 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
   const work = plan[0].work, rest = plan[0].rest;
 
   const customAudioRef = useRef(null);
+  const stopRoundSound = () => {
+    const a = customAudioRef.current;
+    if (a) { try { a.pause(); a.currentTime = 0; } catch (e) {} }
+  };
+  // Звук раунда играет в цикле и тянется до конца «работы». На паузе/конце раунда — глушим.
   const playRoundSound = (idx) => {
+    stopRoundSound();
     const url = plan[idx - 1]?.sound_url;
     if (url) {
       try {
         if (!customAudioRef.current) customAudioRef.current = new Audio();
-        customAudioRef.current.src = url;
-        customAudioRef.current.play().catch(() => beepWork());
+        const a = customAudioRef.current;
+        a.src = url;
+        a.loop = true;
+        a.play().catch(() => beepWork());
       } catch (e) { beepWork(); }
     } else {
       beepWork();
@@ -986,6 +994,7 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
     const cur = plan[idx - 1];
     playRoundSound(idx);
     startTimer(cur.work, () => {
+      stopRoundSound();
       if (idx >= rounds) {
         beepFinal();
         setPhase('done');
@@ -1006,9 +1015,9 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
     startTimer(3, () => goWork(1));
   };
 
-  const stop = () => { stopTimer(); setPhase('idle'); setSecLeft(plan[0].work); };
+  const stop = () => { stopTimer(); stopRoundSound(); setPhase('idle'); setSecLeft(plan[0].work); };
 
-  const close = () => { stopTimer(); onClose(); };
+  const close = () => { stopTimer(); stopRoundSound(); onClose(); };
 
   const phaseLabel = phase === 'prep' ? 'Приготовься'
                   : phase === 'work' ? 'РАБОТА'
