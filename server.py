@@ -1381,6 +1381,23 @@ def my_data(user: dict = Depends(current_user)):
         # Подвинуть прогресс программ юзера (переходы уровней, сбросы) — lazily, на каждом /api/my.
         _advance_user_programs(c, user["id"], today_d)
 
+        # Бэкфилл: для каждой назначенной админом практики, на которую юзер ещё не подписан,
+        # создаём подписку «без срока». Идемпотентно. Чинит старые назначения, сделанные до
+        # авто-подписки в admin_create_assignment.
+        c.execute(
+            """INSERT INTO user_practices (user_id, practice_id, period_type, period_start,
+                                           period_end, joined_at, period_end_notified)
+               SELECT ua.user_id, ua.target_id, 'forever', ?, NULL, ?, 0
+               FROM user_assignments ua
+               JOIN practices p ON p.id = ua.target_id
+               WHERE ua.user_id = ? AND ua.target_type = 'practice'
+                 AND NOT EXISTS (
+                   SELECT 1 FROM user_practices up
+                   WHERE up.user_id = ua.user_id AND up.practice_id = ua.target_id
+                 )""",
+            (today, datetime.now(TZ).isoformat(), user["id"]),
+        )
+
         ups = c.execute(
             """SELECT up.*, p.* FROM user_practices up
                JOIN practices p ON p.id = up.practice_id
@@ -2757,6 +2774,39 @@ def admin_create_assignment(uid: int, body: AssignmentIn, user: dict = Depends(c
                ON CONFLICT(user_id, target_type, target_id) DO NOTHING""",
             (uid, body.target_type, body.target_id, datetime.now(TZ).isoformat(), user["id"]),
         )
+        # Авто-подписка, чтобы практика/программа сразу появилась у юзера в «Сегодня».
+        today_d = user_today_d(uid, c)
+        if body.target_type == "practice":
+            existed = c.execute(
+                "SELECT 1 FROM user_practices WHERE user_id=? AND practice_id=?",
+                (uid, body.target_id),
+            ).fetchone()
+            c.execute(
+                """INSERT INTO user_practices (user_id, practice_id, period_type, period_start,
+                                               period_end, joined_at, period_end_notified)
+                   VALUES (?,?,'forever',?,NULL,?,0)
+                   ON CONFLICT(user_id, practice_id) DO NOTHING""",
+                (uid, body.target_id, today_d.isoformat(), datetime.now(TZ).isoformat()),
+            )
+            if not existed:
+                _send_motivation(c, uid, "practice", body.target_id, "start", 0, today_d)
+        elif body.target_type == "program":
+            levels = _program_levels(c, body.target_id)
+            if levels:
+                existed = c.execute(
+                    "SELECT 1 FROM user_programs WHERE user_id=? AND program_id=?",
+                    (uid, body.target_id),
+                ).fetchone()
+                c.execute(
+                    """INSERT INTO user_programs (user_id, program_id, current_level, level_started_at,
+                                                  level_completed_days, status, joined_at)
+                       VALUES (?,?,1,?,0,'active',?)
+                       ON CONFLICT(user_id, program_id) DO NOTHING""",
+                    (uid, body.target_id, today_d.isoformat(), datetime.now(TZ).isoformat()),
+                )
+                _sync_program_user_practice(c, uid, levels[0]["practice_id"], today_d)
+                if not existed:
+                    _send_motivation(c, uid, "program", body.target_id, "start", 0, today_d)
     return {"ok": True}
 
 
