@@ -1315,9 +1315,9 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
           )}
         </Field>
 
-        <Field label="Ссылка на материал (видео, документ)">
-          <input type="url" value={v.media_url} onChange={(e) => set('media_url', e.target.value)} placeholder="https://..." className="input-field w-full px-4 py-3 rounded-xl mb-2"/>
-          {v.media_url && <input type="text" value={v.media_label} onChange={(e) => set('media_label', e.target.value)} placeholder="Название (необязат.)" className="input-field w-full px-4 py-3 rounded-xl"/>}
+        <Field label="Видео / материал (для инструкции — покажется сверху во время практики)">
+          <VideoPicker url={v.media_url} onChange={(url) => set('media_url', url)}/>
+          {v.media_url && <input type="text" value={v.media_label} onChange={(e) => set('media_label', e.target.value)} placeholder="Название (необязат.)" className="input-field w-full px-4 py-2 rounded-lg text-sm mt-2"/>}
         </Field>
 
         <Field label="Аудио при старте практики (до 3 шт., проигрываются по очереди)">
@@ -1484,6 +1484,78 @@ function AudioPicker({ url, onChange, onLabel, placeholder = 'URL аудио и�
           <audio src={url} controls preload="none" style={{width:'100%', height:'32px'}}/>
           {isLocal && <p className="text-[10px] opacity-50 mt-0.5">Хранится на сервере: {url}</p>}
         </div>
+      )}
+      {err && <p className="text-[11px] mt-1" style={{color:'#e88080'}}>{err}</p>}
+    </div>
+  );
+}
+
+// Подбор видео: URL (YouTube/Vimeo/прямой) / импорт с Я.Диска / загрузка файла.
+function VideoPicker({ url, onChange }) {
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const fileRef = useRef(null);
+
+  const uploadFile = async (file) => {
+    if (!file) return;
+    setErr(''); setBusy(true);
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      const r = await fetch('/api/admin/video/upload', {
+        method: 'POST', body: fd,
+        headers: { 'X-Init-Data': initData, 'X-User-TZ': userTz },
+      });
+      if (!r.ok) throw new Error((await r.json().catch(()=>({}))).detail || `HTTP ${r.status}`);
+      const j = await r.json();
+      onChange(j.url);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+
+  const importYandex = async () => {
+    const link = prompt('Вставь публичную ссылку Яндекс.Диска с видео:');
+    if (!link) return;
+    setErr(''); setBusy(true);
+    try {
+      const r = await api('/api/admin/video/import_yandex', {
+        method: 'POST', body: JSON.stringify({ url: link.trim() }),
+      });
+      onChange(r.url);
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  };
+
+  const isLocal = url && url.startsWith('/photos/');
+  return (
+    <div>
+      <div className="flex gap-1 mb-1.5 flex-wrap">
+        <button type="button" disabled={busy} onClick={() => fileRef.current?.click()}
+                className="text-xs px-2.5 py-1.5 rounded-lg opacity-80 hover:opacity-100 disabled:opacity-40"
+                style={{background:'rgba(212,168,87,0.1)', border:'1px solid rgba(212,168,87,0.3)', color:'#d4a857'}}>
+          {busy ? '...' : '📤 загрузить видео'}
+        </button>
+        <button type="button" disabled={busy} onClick={importYandex}
+                className="text-xs px-2.5 py-1.5 rounded-lg opacity-80 hover:opacity-100 disabled:opacity-40"
+                style={{background:'rgba(127,179,211,0.1)', border:'1px solid rgba(127,179,211,0.3)', color:'#b8d3e6'}}>
+          {busy ? '...' : '💾 с Яндекс.Диска'}
+        </button>
+        {url && (
+          <button type="button" onClick={() => onChange('')}
+                  className="text-xs px-2.5 py-1.5 rounded-lg opacity-50 hover:opacity-100">
+            очистить
+          </button>
+        )}
+      </div>
+      <input type="file" accept="video/*" ref={fileRef} className="hidden"
+             onChange={(e) => uploadFile(e.target.files?.[0])}/>
+      <input type="url" value={url || ''}
+             onChange={(e) => onChange(e.target.value)}
+             placeholder="URL: YouTube / Vimeo / прямой mp4 / или загрузи файл"
+             className="input-field w-full px-3 py-2 rounded-lg text-sm"/>
+      {url && (
+        <p className="text-[10px] opacity-50 mt-1">
+          {isLocal ? `Хранится на сервере: ${url}` : 'Внешняя ссылка'}
+        </p>
       )}
       {err && <p className="text-[11px] mt-1" style={{color:'#e88080'}}>{err}</p>}
     </div>

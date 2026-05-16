@@ -2224,6 +2224,21 @@ AUDIO_EXT_BY_MIME = {
 ALLOWED_AUDIO_EXT = {"mp3", "ogg", "wav", "aac", "m4a", "webm", "flac"}
 MAX_AUDIO_BYTES = 30 * 1024 * 1024  # 30 MB
 
+VIDEO_DIR = PHOTOS_DIR / "videos"
+VIDEO_EXT_BY_MIME = {
+    "video/mp4": "mp4", "video/webm": "webm",
+    "video/quicktime": "mov", "video/x-m4v": "m4v",
+}
+ALLOWED_VIDEO_EXT = {"mp4", "webm", "mov", "m4v"}
+MAX_VIDEO_BYTES = 300 * 1024 * 1024  # 300 MB
+
+
+def _video_ext_from_name(filename: str) -> Optional[str]:
+    if not filename or "." not in filename:
+        return None
+    ext = filename.rsplit(".", 1)[-1].lower()
+    return ext if ext in ALLOWED_VIDEO_EXT else None
+
 
 def _audio_ext_from_name(filename: str) -> Optional[str]:
     if not filename or "." not in filename:
@@ -2297,6 +2312,64 @@ def admin_audio_import_yandex(body: YandexImportIn, user: dict = Depends(current
     fname = f"{secrets.token_hex(8)}.{ext}"
     (AUDIO_DIR / fname).write_bytes(data)
     return {"url": f"/photos/audios/{fname}", "label": (name.rsplit(".", 1)[0] if name else "")[:200]}
+
+
+@app.post("/api/admin/video/upload")
+async def admin_video_upload(file: UploadFile = File(...), user: dict = Depends(current_admin)):
+    """Принимает видео, сохраняет в /photos/videos/. Лимит 300 МБ."""
+    ext = VIDEO_EXT_BY_MIME.get((file.content_type or "").lower()) or _video_ext_from_name(file.filename or "")
+    if not ext:
+        raise HTTPException(400, "Неподдерживаемый формат видео")
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    data = await file.read()
+    if not data:
+        raise HTTPException(400, "Пустой файл")
+    if len(data) > MAX_VIDEO_BYTES:
+        raise HTTPException(413, f"Файл слишком большой (>{MAX_VIDEO_BYTES // (1024*1024)} МБ)")
+    fname = f"{secrets.token_hex(8)}.{ext}"
+    (VIDEO_DIR / fname).write_bytes(data)
+    return {"url": f"/photos/videos/{fname}", "label": (file.filename or "").rsplit(".", 1)[0][:200]}
+
+
+@app.post("/api/admin/video/import_yandex")
+def admin_video_import_yandex(body: YandexImportIn, user: dict = Depends(current_admin)):
+    """Импорт публичной ссылки Я.Диска как видео: резолвит direct-href, скачивает, кладёт в /photos/videos/."""
+    import urllib.request, urllib.parse, json as _json
+    public_url = (body.url or "").strip()
+    if not public_url.startswith(("http://", "https://")):
+        raise HTTPException(400, "Ожидается публичная ссылка Яндекс.Диска")
+    api = "https://cloud-api.yandex.net/v1/disk/public/resources/download?public_key=" + urllib.parse.quote(public_url, safe="")
+    try:
+        with urllib.request.urlopen(api, timeout=15) as r:
+            meta = _json.loads(r.read().decode("utf-8"))
+        href = meta.get("href")
+        if not href:
+            raise ValueError("no href")
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось получить ссылку с Яндекс.Диска: {e}")
+    name = ""
+    try:
+        meta_api = "https://cloud-api.yandex.net/v1/disk/public/resources?public_key=" + urllib.parse.quote(public_url, safe="")
+        with urllib.request.urlopen(meta_api, timeout=15) as r:
+            info = _json.loads(r.read().decode("utf-8"))
+        name = info.get("name") or ""
+    except Exception:
+        pass
+    ext = _video_ext_from_name(name) or "mp4"
+    try:
+        req = urllib.request.Request(href, headers={"User-Agent": "practices-bot/1.0"})
+        with urllib.request.urlopen(req, timeout=180) as r:
+            data = r.read(MAX_VIDEO_BYTES + 1)
+    except Exception as e:
+        raise HTTPException(400, f"Не удалось скачать видео: {e}")
+    if not data:
+        raise HTTPException(400, "Файл пустой")
+    if len(data) > MAX_VIDEO_BYTES:
+        raise HTTPException(413, f"Файл слишком большой (>{MAX_VIDEO_BYTES // (1024*1024)} МБ)")
+    VIDEO_DIR.mkdir(parents=True, exist_ok=True)
+    fname = f"{secrets.token_hex(8)}.{ext}"
+    (VIDEO_DIR / fname).write_bytes(data)
+    return {"url": f"/photos/videos/{fname}", "label": (name.rsplit(".", 1)[0] if name else "")[:200]}
 
 
 @app.delete("/api/admin/categories/{cid}")

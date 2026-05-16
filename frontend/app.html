@@ -827,6 +827,8 @@ function TimerRunner({ practice, entry, onClose, onSaved }) {
           <button onClick={close} className="opacity-60"><X size={20}/></button>
         </div>
 
+        <MediaEmbed url={practice.media_url} label={practice.media_label}/>
+
         <p className="text-sm opacity-70 mb-1">Цель: {fmtSec(target)} ({target}с)</p>
         {bestToday > 0 && (
           <p className="text-sm mb-3" style={{color: bestToday >= target ? '#a3b18a' : accent}}>
@@ -1035,6 +1037,9 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
           <h2 className="font-display text-2xl">{practice.icon} {practice.name}</h2>
           <button onClick={close} className="opacity-60"><X size={20}/></button>
         </div>
+
+        {/* Видео-инструкция: для практик, где мастер показывает упражнение. */}
+        <MediaEmbed url={practice.media_url} label={practice.media_label}/>
 
         <p className="text-sm opacity-70 mb-1">
           {allSame
@@ -1668,6 +1673,51 @@ const renderMarkdown = (text) => {
 };
 const Markdown = ({ text, className = '' }) =>
   text ? <div className={`md-body ${className}`} dangerouslySetInnerHTML={{__html: renderMarkdown(text)}}/> : null;
+
+// Встраиваемый плеер видео: YouTube/Vimeo → iframe, прямые mp4/webm/mov → <video>.
+// Остальные ссылки (соцсети, сайты) — кнопка «открыть».
+function embedVideoUrl(url) {
+  if (!url) return null;
+  // YouTube: https://youtu.be/ID, https://www.youtube.com/watch?v=ID, /shorts/ID, /embed/ID
+  const yt = url.match(/(?:youtube\.com\/(?:watch\?v=|embed\/|shorts\/)|youtu\.be\/)([A-Za-z0-9_-]{6,})/);
+  if (yt) return { kind: 'iframe', src: `https://www.youtube.com/embed/${yt[1]}?rel=0` };
+  // Vimeo: https://vimeo.com/ID
+  const vm = url.match(/vimeo\.com\/(?:video\/)?(\d+)/);
+  if (vm) return { kind: 'iframe', src: `https://player.vimeo.com/video/${vm[1]}` };
+  // Прямой видео-файл
+  if (/\.(mp4|webm|mov|m4v)(\?|#|$)/i.test(url)) return { kind: 'video', src: url };
+  // Локальный путь (потенциально аудио/видео из /photos/...)
+  if (url.startsWith('/photos/') && /\.(mp4|webm|mov|m4v)$/i.test(url)) return { kind: 'video', src: url };
+  return null;
+}
+
+function MediaEmbed({ url, label }) {
+  if (!url) return null;
+  const emb = embedVideoUrl(url);
+  if (emb?.kind === 'iframe') {
+    return (
+      <div className="mb-3 rounded-xl overflow-hidden" style={{aspectRatio: '16 / 9', background:'#000'}}>
+        <iframe src={emb.src} title={label || 'видео'} allow="autoplay; encrypted-media; picture-in-picture"
+                allowFullScreen className="w-full h-full" style={{border:0}}/>
+      </div>
+    );
+  }
+  if (emb?.kind === 'video') {
+    return (
+      <div className="mb-3 rounded-xl overflow-hidden" style={{background:'#000'}}>
+        <video src={emb.src} controls playsInline className="w-full" style={{maxHeight:'45vh'}}/>
+      </div>
+    );
+  }
+  return (
+    <a href={url} target="_blank" rel="noopener noreferrer"
+       className="flex items-center gap-2 mb-3 px-3 py-2.5 rounded-xl text-sm"
+       style={{background:'rgba(127,179,211,0.08)', border:'1px solid rgba(127,179,211,0.25)', color:'#b8d3e6'}}>
+      <ExternalLink size={14}/>
+      <span className="flex-1 truncate">{label || 'Открыть материал'}</span>
+    </a>
+  );
+}
 
 function AudioSequence({ audios }) {
   // Проигрывает список аудио по очереди. Первое стартует автоматически при монтировании
