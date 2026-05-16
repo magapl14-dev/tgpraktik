@@ -1050,6 +1050,22 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
             {phase === 'done' && 'Все раунды завершены'}
             {phase === 'idle' && 'Готов начать?'}
           </div>
+          {/* Инструкция текущего раунда — что делать прямо сейчас */}
+          {phase === 'work' && plan[roundIdx - 1]?.note && (
+            <p className="text-sm mb-3 whitespace-pre-wrap" style={{color:'#f4ead5'}}>
+              {plan[roundIdx - 1].note}
+            </p>
+          )}
+          {phase === 'rest' && roundIdx < rounds && plan[roundIdx]?.note && (
+            <p className="text-xs mb-3 opacity-70 whitespace-pre-wrap">
+              След.: {plan[roundIdx].note}
+            </p>
+          )}
+          {phase === 'idle' && plan[0]?.note && (
+            <p className="text-xs mb-3 opacity-70 whitespace-pre-wrap">
+              1-й раунд: {plan[0].note}
+            </p>
+          )}
           <div className="font-display text-6xl leading-none mb-2" style={{color: phaseColor}}>
             {phase === 'idle' ? plan[0].work : secLeft}
           </div>

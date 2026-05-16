@@ -1103,6 +1103,7 @@ def _parse_rounds_plan(value) -> list:
             "work": work,
             "rest": rest,
             "sound_url": (item.get("sound_url") or "").strip()[:1000],
+            "note": (item.get("note") or "").strip()[:500],
         })
     return out
 
@@ -1124,6 +1125,7 @@ def _rounds_plan_to_json(plan: list) -> str:
             "work": work,
             "rest": rest,
             "sound_url": (item.get("sound_url") or "").strip()[:1000],
+            "note": (item.get("note") or "").strip()[:500],
         })
     return json.dumps(cleaned, ensure_ascii=False) if cleaned else ""
 

@@ -1055,6 +1055,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
           work: Math.max(1, parseInt(r.work) || 1),
           rest: Math.max(0, parseInt(r.rest) || 0),
           sound_url: (r.sound_url || '').trim(),
+          note: (r.note || '').trim(),
         })) : [],
       };
       const body = JSON.stringify(payload);
@@ -1192,7 +1193,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
                              const n = Math.max(1, parseInt(v.rounds_count) || 1);
                              const w = Math.max(1, parseInt(v.work_seconds) || 20);
                              const r = Math.max(0, parseInt(v.rest_seconds) || 0);
-                             set('rounds_plan', Array.from({length: n}, () => ({work: w, rest: r, sound_url: ''})));
+                             set('rounds_plan', Array.from({length: n}, () => ({work: w, rest: r, sound_url: '', note: ''})));
                            } else {
                              set('rounds_plan', []);
                            }
@@ -1225,6 +1226,11 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
                         <button type="button" onClick={() => set('rounds_plan', v.rounds_plan.filter((_,j) => j !== i))}
                                 className="ml-auto px-2 py-1 rounded-md text-sm opacity-60 hover:opacity-100">×</button>
                       </div>
+                      <textarea value={r.note || ''}
+                                onChange={(e) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, note: e.target.value} : x))}
+                                placeholder="инструкция в раунде (что делать) — покажется поверх таймера"
+                                rows={2}
+                                className="input-field w-full px-3 py-1.5 rounded-md text-xs resize-y mb-1.5"/>
                       <AudioPicker url={r.sound_url || ''}
                                    onChange={(url) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, sound_url: url} : x))}
                                    placeholder="звук раунда (необяз.) — иначе стандартный бип"/>
@@ -1233,8 +1239,8 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
                   {v.rounds_plan.length < 100 && (
                     <button type="button"
                             onClick={() => {
-                              const last = v.rounds_plan[v.rounds_plan.length - 1] || {work: 20, rest: 10, sound_url: ''};
-                              set('rounds_plan', [...v.rounds_plan, {work: last.work, rest: last.rest, sound_url: ''}]);
+                              const last = v.rounds_plan[v.rounds_plan.length - 1] || {work: 20, rest: 10, sound_url: '', note: ''};
+                              set('rounds_plan', [...v.rounds_plan, {work: last.work, rest: last.rest, sound_url: '', note: ''}]);
                             }}
                             className="w-full py-2 rounded-lg text-sm opacity-70 hover:opacity-100"
                             style={{border:'1px dashed rgba(244,234,213,0.15)'}}>
