@@ -447,9 +447,11 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
   const streak = practice.streak || 0;
   const bestStreak = practice.best_streak || 0;
   const isResponseType = practice.type === 'text' || practice.type === 'photo' || practice.type === 'video';
+  const isLauncherType = practice.type === 'rounds' || practice.type === 'timer';
   const hasExtras = (practice.extras || []).length > 0;
-  // Если есть extras (или primary — response-type) → одна общая кнопка «ответ» вместо быстрых
-  const useUnifiedSheet = isResponseType || hasExtras;
+  // Для практик-«лаунчеров» (раунды/таймер) основная кнопка — старт таймера, даже если
+  // есть extras-ответ: ответ открывается автоматически после завершения.
+  const useUnifiedSheet = isResponseType || (hasExtras && !isLauncherType);
 
   const stop = (e) => e.stopPropagation();
 
@@ -577,7 +579,7 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
     )}
     {timerOpen && (
       <TimerRunner practice={practice} entry={entry}
-        onClose={() => setTimerOpen(false)}
+        onClose={() => { setTimerOpen(false); if (hasExtras) setResponseOpen(true); }}
         onSaved={async (seconds) => {
           try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
             practice_id: practice.id, count: seconds }) }); }
@@ -587,7 +589,7 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
     )}
     {roundsOpen && (
       <RoundsRunner practice={practice} done={done}
-        onClose={() => setRoundsOpen(false)}
+        onClose={() => { setRoundsOpen(false); if (hasExtras) setResponseOpen(true); }}
         onFinished={async () => {
           try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
             practice_id: practice.id, completed: true }) }); }
