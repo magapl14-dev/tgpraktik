@@ -314,6 +314,7 @@ def init_db():
         _alter_safe(c, "ALTER TABLE users ADD COLUMN tz TEXT")
         _alter_safe(c, "ALTER TABLE users ADD COLUMN mute_until INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE user_practices ADD COLUMN period_end_notified INTEGER DEFAULT 0")
+        _alter_safe(c, "ALTER TABLE user_practices ADD COLUMN priority INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN catalog_hidden INTEGER DEFAULT 0")
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_text TEXT")
         _alter_safe(c, "ALTER TABLE entries ADD COLUMN response_photo TEXT")
@@ -870,6 +871,11 @@ class ExtendIn(BaseModel):
     period_type: Optional[Literal["week", "month", "forever"]] = None  # default — текущий тип
 
 
+class ReorderIn(BaseModel):
+    # Список practice_id в нужном порядке (первый — самый приоритетный).
+    order: list[str]
+
+
 # ─── ВСПОМОГАТЕЛЬНЫЕ ──────────────────────────────────────────────────────
 def today_str() -> str:
     return datetime.now(TZ).strftime("%Y-%m-%d")
@@ -1277,7 +1283,8 @@ def my_data(user: dict = Depends(current_user)):
             """SELECT up.*, p.* FROM user_practices up
                JOIN practices p ON p.id = up.practice_id
                WHERE up.user_id = ?
-                 AND (up.period_end IS NULL OR up.period_end >= ?)""",
+                 AND (up.period_end IS NULL OR up.period_end >= ?)
+               ORDER BY up.priority ASC, up.joined_at ASC""",
             (user["id"], today),
         ).fetchall()
         active_cat_map = _load_practice_categories(c, [r["id"] for r in ups])
@@ -1287,6 +1294,7 @@ def my_data(user: dict = Depends(current_user)):
             d["period_type"] = r["period_type"]
             d["period_start"] = r["period_start"]
             d["period_end"] = r["period_end"]
+            d["priority"] = r["priority"] if "priority" in r.keys() else 0
             practices.append(d)
 
         entries_rows = c.execute(
@@ -1756,6 +1764,19 @@ def extend_practice(body: ExtendIn, user: dict = Depends(current_user)):
             (period_type, new_end.isoformat() if new_end else None, user["id"], body.practice_id),
         )
     return {"ok": True, "period_end": new_end.isoformat() if new_end else None}
+
+
+@app.post("/api/my/practices/reorder")
+def reorder_practices(body: ReorderIn, user: dict = Depends(current_user)):
+    """Задаёт приоритет практик юзера — порядок отображения в «Сегодня».
+    Первый id в списке = priority 0 (выше всех)."""
+    with db() as c:
+        for idx, pid in enumerate(body.order):
+            c.execute(
+                "UPDATE user_practices SET priority=? WHERE user_id=? AND practice_id=?",
+                (idx, user["id"], pid),
+            )
+    return {"ok": True}
 
 
 @app.delete("/api/my/leave/{practice_id}")

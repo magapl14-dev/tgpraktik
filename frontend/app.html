@@ -106,6 +106,9 @@ const HistoryIcon = (p) => <Ic d='<path d="M3 12a9 9 0 1 0 9-9 9.74 9.74 0 0 0-6
 const Pause = (p) => <Ic d='<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>' {...p}/>;
 const Logout = (p) => <Ic d='<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>' {...p}/>;
 const ExternalLink = (p) => <Ic d='<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" x2="21" y1="14" y2="3"/>' {...p}/>;
+const ArrowUp = (p) => <Ic d='<path d="M12 19V5"/><path d="m5 12 7-7 7 7"/>' {...p}/>;
+const ArrowDown = (p) => <Ic d='<path d="M12 5v14"/><path d="m19 12-7 7-7-7"/>' {...p}/>;
+const ListOrdered = (p) => <Ic d='<line x1="10" x2="21" y1="6" y2="6"/><line x1="10" x2="21" y1="12" y2="12"/><line x1="10" x2="21" y1="18" y2="18"/><path d="M4 6h1v4"/><path d="M4 10h2"/><path d="M6 18H4c0-1 2-2 2-3s-1-1.5-2-1"/>' {...p}/>;
 
 // ─── Утилиты ───
 const PALETTE = { sage: '#a3b18a', amber: '#d4a857', rose: '#c98e95', azure: '#7fb3d3',
@@ -257,6 +260,30 @@ function TodayTab({ data, onChange, onPracticeTap, onSettings, muted }) {
   const done = data.practices.filter((p) => isDone(p, data.entries[`${today}_${p.id}`])).length;
   const pct = total ? Math.round(done/total*100) : 0;
 
+  // Локальный порядок практик — позволяет переставлять и сохранять приоритет.
+  const [reorderMode, setReorderMode] = useState(false);
+  const [order, setOrder] = useState(data.practices.map((p) => p.id));
+  // Синхронизируем локальный порядок с серверным после refresh (новые/удалённые практики).
+  useEffect(() => {
+    const serverIds = data.practices.map((p) => p.id);
+    const sameSet = serverIds.length === order.length && serverIds.every((id) => order.includes(id));
+    if (!sameSet) setOrder(serverIds);
+  }, [data.practices]);
+
+  const orderedPractices = order
+    .map((id) => data.practices.find((p) => p.id === id))
+    .filter(Boolean);
+
+  const movePractice = async (idx, dir) => {
+    const newIdx = idx + dir;
+    if (newIdx < 0 || newIdx >= order.length) return;
+    const next = order.slice();
+    [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+    setOrder(next);
+    try { await api('/api/my/practices/reorder', { method:'POST', body: JSON.stringify({ order: next }) }); }
+    catch (e) { /* откатываться не будем — на refresh подтянется как есть */ }
+  };
+
   const fullCur = data.full_day_streak || 0;
   const fullBest = data.full_day_best || 0;
   const halfCur = data.half_day_streak || 0;
@@ -330,10 +357,43 @@ function TodayTab({ data, onChange, onPracticeTap, onSettings, muted }) {
             </div>
           </div>
 
+          {total > 1 && (
+            <div className="flex justify-end mb-2">
+              <button onClick={() => setReorderMode((v) => !v)}
+                      className="text-xs flex items-center gap-1.5 px-2.5 py-1 rounded-full transition"
+                      style={reorderMode
+                        ? {background:'rgba(212,168,87,0.18)', color:'#d4a857', border:'1px solid rgba(212,168,87,0.45)'}
+                        : {background:'rgba(244,234,213,0.05)', color:'rgba(244,234,213,0.6)', border:'1px solid rgba(244,234,213,0.1)'}}>
+                <ListOrdered size={12}/>
+                {reorderMode ? 'Готово' : 'Порядок'}
+              </button>
+            </div>
+          )}
+
           <div className="space-y-3">
-            {data.practices.map((p) => (
-              <PracticeRow key={p.id} practice={p} entry={data.entries[`${today}_${p.id}`]}
-                           onChange={onChange} onTap={() => onPracticeTap(p)}/>
+            {orderedPractices.map((p, idx) => (
+              <div key={p.id} className={reorderMode ? "flex items-stretch gap-2" : ""}>
+                {reorderMode && (
+                  <div className="flex flex-col gap-1 justify-center">
+                    <button onClick={() => movePractice(idx, -1)} disabled={idx === 0}
+                            className="p-1.5 rounded-lg disabled:opacity-25 transition"
+                            style={{background:'rgba(212,168,87,0.12)', color:'#d4a857'}}
+                            aria-label="Выше">
+                      <ArrowUp size={14}/>
+                    </button>
+                    <button onClick={() => movePractice(idx, 1)} disabled={idx === orderedPractices.length - 1}
+                            className="p-1.5 rounded-lg disabled:opacity-25 transition"
+                            style={{background:'rgba(212,168,87,0.12)', color:'#d4a857'}}
+                            aria-label="Ниже">
+                      <ArrowDown size={14}/>
+                    </button>
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <PracticeRow practice={p} entry={data.entries[`${today}_${p.id}`]}
+                               onChange={onChange} onTap={() => onPracticeTap(p)}/>
+                </div>
+              </div>
             ))}
           </div>
         </>
