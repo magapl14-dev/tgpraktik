@@ -1016,6 +1016,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     rounds_count: practice.rounds_count?.toString() || '5',
     work_seconds: practice.work_seconds?.toString() || '20',
     rest_seconds: practice.rest_seconds?.toString() || '20',
+    rounds_plan: Array.isArray(practice.rounds_plan) ? practice.rounds_plan : [],
     category_ids: practice.category_ids || [],
     tag_frequency: practice.tag_frequency || [],
     tag_activity:  practice.tag_activity  || [],
@@ -1037,6 +1038,11 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
         rounds_count: v.type === 'rounds' ? Math.max(1, parseInt(v.rounds_count) || 1) : null,
         work_seconds: v.type === 'rounds' ? Math.max(1, parseInt(v.work_seconds) || 1) : null,
         rest_seconds: v.type === 'rounds' ? Math.max(0, parseInt(v.rest_seconds) || 0) : null,
+        rounds_plan: v.type === 'rounds' ? (v.rounds_plan || []).map((r) => ({
+          work: Math.max(1, parseInt(r.work) || 1),
+          rest: Math.max(0, parseInt(r.rest) || 0),
+          sound_url: (r.sound_url || '').trim(),
+        })) : [],
       };
       const body = JSON.stringify(payload);
       if (isNew) await api('/api/admin/practices', { method:'POST', body });
@@ -1162,6 +1168,70 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
                 placeholder="например: 20 отжиманий"
                 className="input-field w-full px-4 py-3 rounded-xl"/>
             </Field>
+
+            <div className="card rounded-xl p-4">
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-xs uppercase tracking-wider opacity-50">Индивидуальные раунды</div>
+                <label className="flex items-center gap-2 text-xs cursor-pointer">
+                  <input type="checkbox" checked={(v.rounds_plan || []).length > 0}
+                         onChange={(e) => {
+                           if (e.target.checked) {
+                             const n = Math.max(1, parseInt(v.rounds_count) || 1);
+                             const w = Math.max(1, parseInt(v.work_seconds) || 20);
+                             const r = Math.max(0, parseInt(v.rest_seconds) || 0);
+                             set('rounds_plan', Array.from({length: n}, () => ({work: w, rest: r, sound_url: ''})));
+                           } else {
+                             set('rounds_plan', []);
+                           }
+                         }}/>
+                  включить
+                </label>
+              </div>
+              {(v.rounds_plan || []).length === 0 ? (
+                <p className="text-[11px] opacity-60">
+                  Если включить — каждый раунд можно настроить отдельно: своё время работы/паузы и свой звук.
+                  Иначе все раунды одинаковые по полям выше.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {v.rounds_plan.map((r, i) => (
+                    <div key={i} className="rounded-lg p-2" style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.08)'}}>
+                      <div className="flex items-center gap-2 mb-1.5">
+                        <span className="text-xs opacity-60 w-8">#{i+1}</span>
+                        <input type="number" min="1" max="3600" value={r.work}
+                          onChange={(e) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, work: e.target.value} : x))}
+                          placeholder="работа"
+                          className="input-field w-20 px-2 py-1.5 rounded-md text-sm"/>
+                        <span className="text-[10px] opacity-50">сек</span>
+                        <span className="opacity-40">/</span>
+                        <input type="number" min="0" max="3600" value={r.rest}
+                          onChange={(e) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, rest: e.target.value} : x))}
+                          placeholder="пауза"
+                          className="input-field w-20 px-2 py-1.5 rounded-md text-sm"/>
+                        <span className="text-[10px] opacity-50">пауза</span>
+                        <button type="button" onClick={() => set('rounds_plan', v.rounds_plan.filter((_,j) => j !== i))}
+                                className="ml-auto px-2 py-1 rounded-md text-sm opacity-60 hover:opacity-100">×</button>
+                      </div>
+                      <input type="url" value={r.sound_url || ''}
+                             onChange={(e) => set('rounds_plan', v.rounds_plan.map((x,j) => j===i ? {...x, sound_url: e.target.value} : x))}
+                             placeholder="звук раунда (необяз., url mp3) — иначе стандартный бип"
+                             className="input-field w-full px-3 py-1.5 rounded-md text-xs"/>
+                    </div>
+                  ))}
+                  {v.rounds_plan.length < 100 && (
+                    <button type="button"
+                            onClick={() => {
+                              const last = v.rounds_plan[v.rounds_plan.length - 1] || {work: 20, rest: 10, sound_url: ''};
+                              set('rounds_plan', [...v.rounds_plan, {work: last.work, rest: last.rest, sound_url: ''}]);
+                            }}
+                            className="w-full py-2 rounded-lg text-sm opacity-70 hover:opacity-100"
+                            style={{border:'1px dashed rgba(244,234,213,0.15)'}}>
+                      + добавить раунд
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
           </>
         )}
 

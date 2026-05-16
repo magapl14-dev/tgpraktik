@@ -333,6 +333,9 @@ def init_db():
         # До 3 аудио, проигрываются по очереди при открытии практики.
         # Хранится как JSON: [{"url": "...", "label": "..."}].
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN audios TEXT")
+        # Индивидуальный план раундов: JSON-список [{work, rest, sound_url?}].
+        # Если задан — переопределяет rounds_count/work_seconds/rest_seconds в RoundsRunner.
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN rounds_plan TEXT")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -772,6 +775,10 @@ class PracticeIn(BaseModel):
     rounds_count: Optional[int] = Field(None, ge=1, le=100)
     work_seconds: Optional[int] = Field(None, ge=1, le=3600)
     rest_seconds: Optional[int] = Field(None, ge=0, le=3600)
+    # Если задан — каждый раунд со своим work/rest и (опц.) своим звуком.
+    # Длина = эффективное число раундов; rounds_count/work_seconds/rest_seconds
+    # тогда используются только для отображения краткой сводки.
+    rounds_plan: list[dict] = Field(default_factory=list, max_length=100)
     icon: Optional[str] = "✨"
     palette: Optional[str] = "amber"
     media_url: Optional[str] = ""
@@ -1070,6 +1077,57 @@ def _parse_audios(value) -> list:
     return out
 
 
+def _parse_rounds_plan(value) -> list:
+    """JSON-строка → список раундов [{work, rest, sound_url}]. Максимум 100."""
+    if not value:
+        return []
+    try:
+        import json
+        raw = json.loads(value)
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:100]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            work = int(item.get("work", 0))
+            rest = int(item.get("rest", 0))
+        except Exception:
+            continue
+        if work < 1 or work > 3600 or rest < 0 or rest > 3600:
+            continue
+        out.append({
+            "work": work,
+            "rest": rest,
+            "sound_url": (item.get("sound_url") or "").strip()[:1000],
+        })
+    return out
+
+
+def _rounds_plan_to_json(plan: list) -> str:
+    import json
+    cleaned = []
+    for item in (plan or [])[:100]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            work = int(item.get("work", 0))
+            rest = int(item.get("rest", 0))
+        except Exception:
+            continue
+        if work < 1 or work > 3600 or rest < 0 or rest > 3600:
+            continue
+        cleaned.append({
+            "work": work,
+            "rest": rest,
+            "sound_url": (item.get("sound_url") or "").strip()[:1000],
+        })
+    return json.dumps(cleaned, ensure_ascii=False) if cleaned else ""
+
+
 def _audios_to_json(audios: list) -> str:
     import json
     cleaned = []
@@ -1109,6 +1167,7 @@ def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
         "rounds_count": row["rounds_count"] if "rounds_count" in row.keys() else None,
         "work_seconds": row["work_seconds"] if "work_seconds" in row.keys() else None,
         "rest_seconds": row["rest_seconds"] if "rest_seconds" in row.keys() else None,
+        "rounds_plan": _parse_rounds_plan(row["rounds_plan"]) if "rounds_plan" in row.keys() else [],
         "icon": row["icon"] or "✨",
         "palette": row["palette"] or "amber",
         "media_url": row["media_url"] or "",
@@ -2182,16 +2241,16 @@ def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
                (id, name, description, type, extras, target, unit, icon, palette, media_url, media_label,
                 audios, photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
                 tag_frequency, tag_activity, tag_inventory, tag_location,
-                rounds_count, work_seconds, rest_seconds,
+                rounds_count, work_seconds, rest_seconds, rounds_plan,
                 created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, _audios_to_json(body.audios), photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
              _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
-             body.rounds_count, body.work_seconds, body.rest_seconds,
+             body.rounds_count, body.work_seconds, body.rest_seconds, _rounds_plan_to_json(body.rounds_plan),
              datetime.now(TZ).isoformat(), user["id"]),
         )
         _save_practice_categories(c, pid, body.category_ids)
@@ -2212,7 +2271,7 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
                palette=?, media_url=?, media_label=?, audios=?, photo=?, max_reminders=?,
                reminder_from=?, reminder_to=?, active=?, catalog_hidden=?,
                tag_frequency=?, tag_activity=?, tag_inventory=?, tag_location=?,
-               rounds_count=?, work_seconds=?, rest_seconds=?
+               rounds_count=?, work_seconds=?, rest_seconds=?, rounds_plan=?
                WHERE id=?""",
             (body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, _audios_to_json(body.audios), photo_value,
@@ -2220,7 +2279,7 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
              _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
-             body.rounds_count, body.work_seconds, body.rest_seconds,
+             body.rounds_count, body.work_seconds, body.rest_seconds, _rounds_plan_to_json(body.rounds_plan),
              pid),
         )
         _save_practice_categories(c, pid, body.category_ids)

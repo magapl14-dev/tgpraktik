@@ -484,7 +484,11 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
             {practice.type === 'text'  && <span>ответ текстом</span>}
             {practice.type === 'photo' && <span>фото</span>}
             {practice.type === 'video' && <span>ссылка на видео</span>}
-            {practice.type === 'rounds' && <span className="flex items-center gap-1"><Target size={11}/>{practice.rounds_count}×{practice.work_seconds}с / {practice.rest_seconds || 0}с</span>}
+            {practice.type === 'rounds' && <span className="flex items-center gap-1"><Target size={11}/>{
+              (practice.rounds_plan && practice.rounds_plan.length > 0)
+                ? `${practice.rounds_plan.length} раундов`
+                : `${practice.rounds_count}×${practice.work_seconds}с / ${practice.rest_seconds || 0}с`
+            }</span>}
             {practice.type === 'timer'  && <span className="flex items-center gap-1"><Target size={11}/>до {practice.target}с {entry?.count ? `· рекорд ${entry.count}с` : ''}</span>}
           </div>
         </div>
@@ -897,18 +901,48 @@ const beepTick  = () => playBeep(1000, 60, 'sine', 0.12); // короткий т
 
 function RoundsRunner({ practice, done, onClose, onFinished }) {
   const accent = PALETTE[practice.palette] || PALETTE.amber;
-  const rounds = Math.max(1, practice.rounds_count || 1);
-  const work   = Math.max(1, practice.work_seconds || 20);
-  const rest   = Math.max(0, practice.rest_seconds || 0);
+  // Если задан rounds_plan — используем его; иначе разворачиваем равномерный план из старых полей.
+  const plan = (Array.isArray(practice.rounds_plan) && practice.rounds_plan.length > 0)
+    ? practice.rounds_plan.map((r) => ({
+        work: Math.max(1, parseInt(r.work) || 1),
+        rest: Math.max(0, parseInt(r.rest) || 0),
+        sound_url: r.sound_url || '',
+      }))
+    : Array.from({length: Math.max(1, practice.rounds_count || 1)}, () => ({
+        work: Math.max(1, practice.work_seconds || 20),
+        rest: Math.max(0, practice.rest_seconds || 0),
+        sound_url: '',
+      }));
+  const rounds = plan.length;
+  // Краткая сводка вверху: либо «N×Wс / Rс», либо «N раундов, разное время» если план неоднородный.
+  const allSame = plan.every((r) => r.work === plan[0].work && r.rest === plan[0].rest && !r.sound_url);
+  const work = plan[0].work, rest = plan[0].rest;
+
+  const customAudioRef = useRef(null);
+  const playRoundSound = (idx) => {
+    const url = plan[idx - 1]?.sound_url;
+    if (url) {
+      try {
+        if (!customAudioRef.current) customAudioRef.current = new Audio();
+        customAudioRef.current.src = url;
+        customAudioRef.current.play().catch(() => beepWork());
+      } catch (e) { beepWork(); }
+    } else {
+      beepWork();
+    }
+  };
 
   // phase: 'idle' | 'prep' | 'work' | 'rest' | 'done'
   const [phase, setPhase]       = useState('idle');
   const [roundIdx, setRoundIdx] = useState(1);   // 1..rounds
-  const [secLeft, setSecLeft]   = useState(work);
+  const [secLeft, setSecLeft]   = useState(plan[0].work);
   const tickRef = useRef(null);
 
   const stopTimer = () => { if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; } };
-  useEffect(() => () => stopTimer(), []);
+  useEffect(() => () => {
+    stopTimer();
+    if (customAudioRef.current) { try { customAudioRef.current.pause(); } catch(e){} }
+  }, []);
 
   const startTimer = (seconds, onZero) => {
     stopTimer();
@@ -924,16 +958,17 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
 
   const goWork = (idx) => {
     setPhase('work'); setRoundIdx(idx);
-    beepWork();
-    startTimer(work, () => {
+    const cur = plan[idx - 1];
+    playRoundSound(idx);
+    startTimer(cur.work, () => {
       if (idx >= rounds) {
         beepFinal();
         setPhase('done');
         onFinished && onFinished();
-      } else if (rest > 0) {
+      } else if (cur.rest > 0) {
         beepRest();
         setPhase('rest');
-        startTimer(rest, () => goWork(idx + 1));
+        startTimer(cur.rest, () => goWork(idx + 1));
       } else {
         goWork(idx + 1);
       }
@@ -946,7 +981,7 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
     startTimer(3, () => goWork(1));
   };
 
-  const stop = () => { stopTimer(); setPhase('idle'); setSecLeft(work); };
+  const stop = () => { stopTimer(); setPhase('idle'); setSecLeft(plan[0].work); };
 
   const close = () => { stopTimer(); onClose(); };
 
@@ -968,7 +1003,9 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
         </div>
 
         <p className="text-sm opacity-70 mb-1">
-          {rounds} раундов · работа {work}с {rest > 0 ? `· пауза ${rest}с` : '· без пауз'}
+          {allSame
+            ? `${rounds} раундов · работа ${work}с ${rest > 0 ? `· пауза ${rest}с` : '· без пауз'}`
+            : `${rounds} раундов · разное время по раундам`}
         </p>
         {practice.unit && <p className="text-sm opacity-80 mb-4">Задача в раунде: <b>{practice.unit}</b></p>}
         {practice.description && <p className="text-xs opacity-60 mb-4">{practice.description}</p>}
@@ -980,7 +1017,7 @@ function RoundsRunner({ practice, done, onClose, onFinished }) {
             {phase === 'idle' && 'Готов начать?'}
           </div>
           <div className="font-display text-6xl leading-none mb-2" style={{color: phaseColor}}>
-            {phase === 'idle' ? work : secLeft}
+            {phase === 'idle' ? plan[0].work : secLeft}
           </div>
           <div className="text-sm uppercase tracking-wider" style={{color: phaseColor, opacity: 0.85}}>
             {phaseLabel}
