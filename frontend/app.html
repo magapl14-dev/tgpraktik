@@ -1512,6 +1512,15 @@ function JoinSheet({ practice, onClose, onJoined }) {
           <button onClick={onClose} className="opacity-60"><X size={20}/></button>
         </div>
         {practice.description && <div className="mb-4"><Markdown text={practice.description}/></div>}
+        <AudioSequence audios={practice.audios}/>
+        {practice.media_url && (
+          <a href={practice.media_url} target="_blank" rel="noopener noreferrer"
+             className="flex items-center gap-2 mb-4 px-3 py-2.5 rounded-xl text-sm"
+             style={{background:'rgba(127,179,211,0.08)', border:'1px solid rgba(127,179,211,0.25)', color:'#b8d3e6'}}>
+            <ExternalLink size={14}/>
+            <span className="flex-1 truncate">{practice.media_label || 'Открыть материал'}</span>
+          </a>
+        )}
         <p className="text-xs uppercase tracking-wider opacity-50 mb-2">Период</p>
         <div className="grid grid-cols-3 gap-2 mb-6">
           {[['week','Неделя'],['month','Месяц'],['forever','Без срока']].map(([v,l]) => (
