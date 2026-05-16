@@ -86,10 +86,13 @@ CREATE TABLE IF NOT EXISTS practices (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
   description    TEXT,
-  type           TEXT NOT NULL,         -- 'binary' | 'count' | 'text' | 'photo' | 'video' — главный (определяет «день засчитан»)
+  type           TEXT NOT NULL,         -- 'binary' | 'count' | 'text' | 'photo' | 'video' | 'rounds' — главный (определяет «день засчитан»)
   extras         TEXT,                  -- CSV из 'text','photo','video': опциональные доп. поля (юзер может, но не обязан)
   target         INTEGER,
   unit           TEXT,
+  rounds_count   INTEGER,               -- для type='rounds': сколько раундов (например, 5)
+  work_seconds   INTEGER,               -- для type='rounds': секунд активной фазы (например, 20)
+  rest_seconds   INTEGER,               -- для type='rounds': секунд паузы между раундами (например, 20)
   icon           TEXT,
   palette        TEXT,
   media_url      TEXT,
@@ -322,6 +325,10 @@ def init_db():
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_activity TEXT")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_inventory TEXT")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN tag_location TEXT")
+        # Раунды: интервальная тренировка (N подходов × work_seconds + rest_seconds)
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN rounds_count INTEGER")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN work_seconds INTEGER")
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN rest_seconds INTEGER")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -754,10 +761,13 @@ def save_photo_from_input(value: Optional[str], practice_id: str) -> Optional[st
 class PracticeIn(BaseModel):
     name: str
     description: Optional[str] = ""
-    type: Literal["binary", "count", "text", "photo", "video"] = "binary"
+    type: Literal["binary", "count", "text", "photo", "video", "rounds"] = "binary"
     extras: list[Literal["text", "photo", "video"]] = Field(default_factory=list)
     target: Optional[int] = None
     unit: Optional[str] = ""
+    rounds_count: Optional[int] = Field(None, ge=1, le=100)
+    work_seconds: Optional[int] = Field(None, ge=1, le=3600)
+    rest_seconds: Optional[int] = Field(None, ge=0, le=3600)
     icon: Optional[str] = "✨"
     palette: Optional[str] = "amber"
     media_url: Optional[str] = ""
@@ -879,6 +889,8 @@ def is_done(practice_row, entry_row) -> bool:
         return bool(entry_row["response_photo"])
     if t == "video":
         return bool((entry_row["response_video_url"] or "").strip())
+    if t == "rounds":
+        return bool(entry_row["completed"])
     return False
 
 
@@ -889,7 +901,8 @@ DONE_SQL = (
     " OR (p.type='count'  AND e.count >= COALESCE(p.target,1))"
     " OR (p.type='text'   AND e.response_text IS NOT NULL AND TRIM(e.response_text) != '')"
     " OR (p.type='photo'  AND e.response_photo IS NOT NULL AND e.response_photo != '')"
-    " OR (p.type='video'  AND e.response_video_url IS NOT NULL AND TRIM(e.response_video_url) != ''))"
+    " OR (p.type='video'  AND e.response_video_url IS NOT NULL AND TRIM(e.response_video_url) != '')"
+    " OR (p.type='rounds' AND e.completed=1))"
 )
 
 
@@ -1044,6 +1057,9 @@ def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
         "extras": _parse_extras(row["extras"]) if "extras" in row.keys() else [],
         "target": row["target"],
         "unit": row["unit"] or "",
+        "rounds_count": row["rounds_count"] if "rounds_count" in row.keys() else None,
+        "work_seconds": row["work_seconds"] if "work_seconds" in row.keys() else None,
+        "rest_seconds": row["rest_seconds"] if "rest_seconds" in row.keys() else None,
         "icon": row["icon"] or "✨",
         "palette": row["palette"] or "amber",
         "media_url": row["media_url"] or "",
@@ -1826,6 +1842,8 @@ def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
                 day_counted = bool(resp_photo)
             elif t == "video":
                 day_counted = bool((resp_video or "").strip())
+            elif t == "rounds":
+                day_counted = (completed == 1)
             else:
                 day_counted = False
             if day_counted:
@@ -2093,14 +2111,16 @@ def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
                (id, name, description, type, extras, target, unit, icon, palette, media_url, media_label,
                 photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
                 tag_frequency, tag_activity, tag_inventory, tag_location,
+                rounds_count, work_seconds, rest_seconds,
                 created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
              _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
+             body.rounds_count, body.work_seconds, body.rest_seconds,
              datetime.now(TZ).isoformat(), user["id"]),
         )
         _save_practice_categories(c, pid, body.category_ids)
@@ -2120,7 +2140,8 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
             """UPDATE practices SET name=?, description=?, type=?, extras=?, target=?, unit=?, icon=?,
                palette=?, media_url=?, media_label=?, photo=?, max_reminders=?,
                reminder_from=?, reminder_to=?, active=?, catalog_hidden=?,
-               tag_frequency=?, tag_activity=?, tag_inventory=?, tag_location=?
+               tag_frequency=?, tag_activity=?, tag_inventory=?, tag_location=?,
+               rounds_count=?, work_seconds=?, rest_seconds=?
                WHERE id=?""",
             (body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, photo_value,
@@ -2128,6 +2149,7 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
              _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
+             body.rounds_count, body.work_seconds, body.rest_seconds,
              pid),
         )
         _save_practice_categories(c, pid, body.category_ids)

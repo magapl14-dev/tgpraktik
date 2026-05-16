@@ -224,7 +224,15 @@ function PracticesList({ practices, categories, onEdit, onCreate, onChange }) {
               <div className="flex-1 min-w-0">
                 <div className="font-display text-lg leading-tight truncate">{p.name}</div>
                 <div className="text-xs opacity-60 flex items-center gap-2 flex-wrap">
-                  <span>{p.type === 'binary' ? 'Факт' : `Кол-во ${p.target}${p.unit ? ' '+p.unit : ''}`}</span>
+                  <span>{
+                    p.type === 'binary' ? 'Факт' :
+                    p.type === 'count'  ? `Кол-во ${p.target}${p.unit ? ' '+p.unit : ''}` :
+                    p.type === 'text'   ? 'Текст' :
+                    p.type === 'photo'  ? 'Фото'  :
+                    p.type === 'video'  ? 'Видео' :
+                    p.type === 'rounds' ? `Раунды ${p.rounds_count || '?'}×${p.work_seconds || '?'}с / ${p.rest_seconds || 0}с` :
+                    p.type
+                  }</span>
                   <span>•</span>
                   <span>{p.max_reminders} напом. {p.reminder_from}–{p.reminder_to}</span>
                   {!p.active && <><span>•</span><span style={{color:'#e88080'}}>выключена</span></>}
@@ -928,6 +936,7 @@ function UserHistoryModal({ user, onClose }) {
                       : t === 'text'  ? !!(e.response_text || '').trim()
                       : t === 'photo' ? !!e.response_photo
                       : t === 'video' ? !!(e.response_video_url || '').trim()
+                      : t === 'rounds' ? !!e.completed
                       : false;
                     const hasText  = !!(e.response_text  || '').trim();
                     const hasPhoto = !!e.response_photo;
@@ -944,6 +953,7 @@ function UserHistoryModal({ user, onClose }) {
                             {t === 'text'   && (done ? '✓ ответ' : '—')}
                             {t === 'photo'  && (done ? '✓ фото' : '—')}
                             {t === 'video'  && (done ? '✓ видео' : '—')}
+                            {t === 'rounds' && (done ? '✓ раунды пройдены' : '— не завершено')}
                           </span>
                           <span className="text-[10px] opacity-40 hidden md:inline">{fmtTs(e.ts)}</span>
                         </div>
@@ -999,6 +1009,9 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     active: practice.active !== false,
     catalog_hidden: practice.catalog_hidden === true,
     extras: practice.extras || [],
+    rounds_count: practice.rounds_count?.toString() || '5',
+    work_seconds: practice.work_seconds?.toString() || '20',
+    rest_seconds: practice.rest_seconds?.toString() || '20',
     category_ids: practice.category_ids || [],
     tag_frequency: practice.tag_frequency || [],
     tag_activity:  practice.tag_activity  || [],
@@ -1012,7 +1025,14 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     if (!v.name.trim()) return;
     setSaving(true);
     try {
-      const body = JSON.stringify({...v, target: v.type === 'count' ? parseInt(v.target) || 1 : null});
+      const payload = {
+        ...v,
+        target: v.type === 'count' ? parseInt(v.target) || 1 : null,
+        rounds_count: v.type === 'rounds' ? Math.max(1, parseInt(v.rounds_count) || 1) : null,
+        work_seconds: v.type === 'rounds' ? Math.max(1, parseInt(v.work_seconds) || 1) : null,
+        rest_seconds: v.type === 'rounds' ? Math.max(0, parseInt(v.rest_seconds) || 0) : null,
+      };
+      const body = JSON.stringify(payload);
       if (isNew) await api('/api/admin/practices', { method:'POST', body });
       else await api(`/api/admin/practices/${practice.id}`, { method:'PUT', body });
       await onSaved();
@@ -1057,6 +1077,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
             <TypeBtn active={v.type==='text'} onClick={() => set('type','text')} title="Текст" sub="Написать ответ"/>
             <TypeBtn active={v.type==='photo'} onClick={() => set('type','photo')} title="Фото" sub="Загрузить снимок"/>
             <TypeBtn active={v.type==='video'} onClick={() => set('type','video')} title="Видео" sub="Ссылка на видео"/>
+            <TypeBtn active={v.type==='rounds'} onClick={() => set('type','rounds')} title="Раунды" sub="Интервалы со звуком"/>
           </div>
         </Field>
 
@@ -1089,6 +1110,37 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
               <input type="text" value={v.unit} onChange={(e) => set('unit', e.target.value)} placeholder="мин, кругов, стр" className="input-field w-full px-4 py-3 rounded-xl"/>
             </Field>
           </div>
+        )}
+
+        {v.type === 'rounds' && (
+          <>
+            <p className="text-xs opacity-60 -mt-2">
+              Интервальная тренировка: N подходов, каждый по «работа» секунд, между ними «пауза» секунд.
+              В Mini App юзеру будет таймер со звуковыми сигналами (старт работы / старт паузы / финал).
+            </p>
+            <div className="grid grid-cols-3 gap-3">
+              <Field label="Раундов">
+                <input type="number" min="1" max="100" value={v.rounds_count}
+                  onChange={(e) => set('rounds_count', e.target.value)}
+                  className="input-field w-full px-4 py-3 rounded-xl"/>
+              </Field>
+              <Field label="Работа, сек">
+                <input type="number" min="1" max="3600" value={v.work_seconds}
+                  onChange={(e) => set('work_seconds', e.target.value)}
+                  className="input-field w-full px-4 py-3 rounded-xl"/>
+              </Field>
+              <Field label="Пауза, сек">
+                <input type="number" min="0" max="3600" value={v.rest_seconds}
+                  onChange={(e) => set('rest_seconds', e.target.value)}
+                  className="input-field w-full px-4 py-3 rounded-xl"/>
+              </Field>
+            </div>
+            <Field label="Описание задачи в раунде (необязательно)">
+              <input type="text" value={v.unit} onChange={(e) => set('unit', e.target.value)}
+                placeholder="например: 20 отжиманий"
+                className="input-field w-full px-4 py-3 rounded-xl"/>
+            </Field>
+          </>
         )}
 
         <Field label="Категории">

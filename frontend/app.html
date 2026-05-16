@@ -123,6 +123,7 @@ const isDone = (p, e) => {
     case 'text':   return !!(e.response_text || '').trim();
     case 'photo':  return !!e.response_photo;
     case 'video':  return !!(e.response_video_url || '').trim();
+    case 'rounds': return !!e.completed;
     default:       return false;
   }
 };
@@ -354,6 +355,7 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
   const [editingCount, setEditingCount] = useState(false);
   const [draft, setDraft] = useState('');
   const [responseOpen, setResponseOpen] = useState(false);
+  const [roundsOpen,   setRoundsOpen]   = useState(false);
   const accent = PALETTE[practice.palette] || PALETTE.amber;
   const done = isDone(practice, entry);
   const count = entry?.count || 0;
@@ -420,6 +422,7 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
             {practice.type === 'text'  && <span>ответ текстом</span>}
             {practice.type === 'photo' && <span>фото</span>}
             {practice.type === 'video' && <span>ссылка на видео</span>}
+            {practice.type === 'rounds' && <span className="flex items-center gap-1"><Target size={11}/>{practice.rounds_count}×{practice.work_seconds}с / {practice.rest_seconds || 0}с</span>}
           </div>
         </div>
         {useUnifiedSheet ? (
@@ -428,6 +431,13 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
             style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
                     color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
             {done ? '✓ ответ' : 'ответ'}
+          </button>
+        ) : practice.type === 'rounds' ? (
+          <button onClick={(e) => { stop(e); setRoundsOpen(true); }}
+            className="px-3 py-2 rounded-full text-xs whitespace-nowrap"
+            style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
+                    color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
+            {done ? '✓ пройдено' : '▶ старт'}
           </button>
         ) : practice.type === 'binary' ? (
           <button onClick={updateBinary} disabled={busy}
@@ -467,6 +477,16 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
       <ResponseSheet practice={practice} entry={entry}
         onClose={() => setResponseOpen(false)}
         onSaved={async () => { setResponseOpen(false); await onChange(); }}/>
+    )}
+    {roundsOpen && (
+      <RoundsRunner practice={practice} done={done}
+        onClose={() => setRoundsOpen(false)}
+        onFinished={async () => {
+          try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+            practice_id: practice.id, completed: true }) }); }
+          catch (e) { alert(e.message); }
+          await onChange();
+        }}/>
     )}
     </>
   );
@@ -629,6 +649,164 @@ function ResponseSheet({ practice, entry, onClose, onSaved }) {
         {isResponseType && (
           <p className="text-[11px] opacity-50 text-center mt-3">Прошлые дни заморожены — изменить нельзя.</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Раунды (интервальный таймер со звуковыми сигналами) ───
+// Три разных бипа:
+//   • старт работы — высокий короткий (880 Гц, 180 мс)
+//   • старт паузы  — низкий короткий (440 Гц, 180 мс)
+//   • финал всех раундов — тройной восходящий аккорд
+function playBeep(freq, ms, type = 'sine', vol = 0.25) {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    const ctx = playBeep._ctx || (playBeep._ctx = new AC());
+    if (ctx.state === 'suspended') ctx.resume();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = type; o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(ctx.destination);
+    const now = ctx.currentTime;
+    g.gain.setValueAtTime(vol, now);
+    g.gain.exponentialRampToValueAtTime(0.001, now + ms / 1000);
+    o.start(now); o.stop(now + ms / 1000 + 0.02);
+  } catch (e) { /* без звука — не критично */ }
+}
+const beepWork  = () => playBeep(880, 200, 'square', 0.22);
+const beepRest  = () => playBeep(330, 220, 'sine',   0.22);
+const beepFinal = () => {
+  playBeep(660,  220, 'sine', 0.25);
+  setTimeout(() => playBeep(880, 220, 'sine', 0.25), 230);
+  setTimeout(() => playBeep(1175, 350, 'sine', 0.28), 470);
+};
+const beepTick  = () => playBeep(1000, 60, 'sine', 0.12); // короткий тик на последние секунды
+
+function RoundsRunner({ practice, done, onClose, onFinished }) {
+  const accent = PALETTE[practice.palette] || PALETTE.amber;
+  const rounds = Math.max(1, practice.rounds_count || 1);
+  const work   = Math.max(1, practice.work_seconds || 20);
+  const rest   = Math.max(0, practice.rest_seconds || 0);
+
+  // phase: 'idle' | 'prep' | 'work' | 'rest' | 'done'
+  const [phase, setPhase]       = useState('idle');
+  const [roundIdx, setRoundIdx] = useState(1);   // 1..rounds
+  const [secLeft, setSecLeft]   = useState(work);
+  const tickRef = useRef(null);
+
+  const stopTimer = () => { if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; } };
+  useEffect(() => () => stopTimer(), []);
+
+  const startTimer = (seconds, onZero) => {
+    stopTimer();
+    setSecLeft(seconds);
+    let left = seconds;
+    tickRef.current = setInterval(() => {
+      left -= 1;
+      if (left <= 3 && left > 0) beepTick();
+      setSecLeft(left);
+      if (left <= 0) { stopTimer(); onZero(); }
+    }, 1000);
+  };
+
+  const goWork = (idx) => {
+    setPhase('work'); setRoundIdx(idx);
+    beepWork();
+    startTimer(work, () => {
+      if (idx >= rounds) {
+        beepFinal();
+        setPhase('done');
+        onFinished && onFinished();
+      } else if (rest > 0) {
+        beepRest();
+        setPhase('rest');
+        startTimer(rest, () => goWork(idx + 1));
+      } else {
+        goWork(idx + 1);
+      }
+    });
+  };
+
+  const start = () => {
+    // короткая «преп»-фаза 3 сек, чтобы юзер успел приготовиться
+    setPhase('prep'); setRoundIdx(1);
+    startTimer(3, () => goWork(1));
+  };
+
+  const stop = () => { stopTimer(); setPhase('idle'); setSecLeft(work); };
+
+  const close = () => { stopTimer(); onClose(); };
+
+  const phaseLabel = phase === 'prep' ? 'Приготовься'
+                  : phase === 'work' ? 'РАБОТА'
+                  : phase === 'rest' ? 'Пауза'
+                  : phase === 'done' ? 'Готово!' : 'Старт';
+  const phaseColor = phase === 'work' ? '#d4a857'
+                  : phase === 'rest' ? '#7fb3d3'
+                  : phase === 'done' ? '#a3b18a'
+                  : '#f4ead5';
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={close}>
+      <div className="w-full max-w-md rounded-t-3xl p-6 fade-in" style={{background:'#161824'}} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-display text-2xl">{practice.icon} {practice.name}</h2>
+          <button onClick={close} className="opacity-60"><X size={20}/></button>
+        </div>
+
+        <p className="text-sm opacity-70 mb-1">
+          {rounds} раундов · работа {work}с {rest > 0 ? `· пауза ${rest}с` : '· без пауз'}
+        </p>
+        {practice.unit && <p className="text-sm opacity-80 mb-4">Задача в раунде: <b>{practice.unit}</b></p>}
+        {practice.description && <p className="text-xs opacity-60 mb-4">{practice.description}</p>}
+
+        <div className="rounded-2xl p-6 text-center mb-4" style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.1)'}}>
+          <div className="text-xs uppercase tracking-widest opacity-60 mb-2">
+            {phase !== 'idle' && phase !== 'done' && `Раунд ${roundIdx} / ${rounds}`}
+            {phase === 'done' && 'Все раунды завершены'}
+            {phase === 'idle' && 'Готов начать?'}
+          </div>
+          <div className="font-display text-6xl leading-none mb-2" style={{color: phaseColor}}>
+            {phase === 'idle' ? work : secLeft}
+          </div>
+          <div className="text-sm uppercase tracking-wider" style={{color: phaseColor, opacity: 0.85}}>
+            {phaseLabel}
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          {(phase === 'idle' || phase === 'done') && (
+            <button onClick={start}
+              className="flex-1 py-3.5 rounded-full font-medium"
+              style={{background:`linear-gradient(135deg, ${accent}, #b8902f)`, color:'#1a1410'}}>
+              {phase === 'done' ? '▶ Ещё раз' : '▶ Старт'}
+            </button>
+          )}
+          {(phase === 'work' || phase === 'rest' || phase === 'prep') && (
+            <button onClick={stop}
+              className="flex-1 py-3.5 rounded-full font-medium"
+              style={{border:'1px solid rgba(232,128,128,0.4)', color:'#e88080'}}>
+              Стоп
+            </button>
+          )}
+          {phase === 'done' && (
+            <button onClick={close}
+              className="px-5 py-3.5 rounded-full text-sm"
+              style={{background:'rgba(244,234,213,0.06)', color:'#f4ead5'}}>
+              Закрыть
+            </button>
+          )}
+        </div>
+
+        {done && phase === 'idle' && (
+          <p className="text-[11px] opacity-50 text-center mt-3">Сегодня уже отмечено как пройденное — можешь пройти ещё раз.</p>
+        )}
+        <p className="text-[11px] opacity-40 text-center mt-3">
+          Высокий сигнал — старт работы · низкий — пауза · тройной — конец
+        </p>
       </div>
     </div>
   );
