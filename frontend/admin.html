@@ -1005,6 +1005,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     palette: practice.palette || 'amber',
     media_url: practice.media_url || '',
     media_label: practice.media_label || '',
+    audios: Array.isArray(practice.audios) ? practice.audios.slice(0, 3) : [],
     photo: practice.photo || null,
     max_reminders: practice.max_reminders ?? 3,
     reminder_from: practice.reminder_from || '08:00',
@@ -1229,6 +1230,35 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
         <Field label="Ссылка на материал (видео, документ)">
           <input type="url" value={v.media_url} onChange={(e) => set('media_url', e.target.value)} placeholder="https://..." className="input-field w-full px-4 py-3 rounded-xl mb-2"/>
           {v.media_url && <input type="text" value={v.media_label} onChange={(e) => set('media_label', e.target.value)} placeholder="Название (необязат.)" className="input-field w-full px-4 py-3 rounded-xl"/>}
+        </Field>
+
+        <Field label="Аудио при старте практики (до 3 шт., проигрываются по очереди)">
+          <div className="space-y-2">
+            {v.audios.map((a, i) => (
+              <div key={i} className="flex gap-2 items-start">
+                <div className="flex-1 space-y-1">
+                  <input type="url" value={a.url || ''}
+                         onChange={(e) => set('audios', v.audios.map((x, j) => j===i ? {...x, url: e.target.value} : x))}
+                         placeholder="https://.../audio.mp3"
+                         className="input-field w-full px-4 py-2 rounded-xl"/>
+                  <input type="text" value={a.label || ''}
+                         onChange={(e) => set('audios', v.audios.map((x, j) => j===i ? {...x, label: e.target.value} : x))}
+                         placeholder="Название (необязат.)"
+                         className="input-field w-full px-4 py-2 rounded-xl text-sm"/>
+                </div>
+                <button type="button" onClick={() => set('audios', v.audios.filter((_, j) => j !== i))}
+                        className="px-3 py-2 rounded-xl opacity-60 hover:opacity-100"
+                        style={{border:'1px solid rgba(244,234,213,0.15)'}}>×</button>
+              </div>
+            ))}
+            {v.audios.length < 3 && (
+              <button type="button" onClick={() => set('audios', [...v.audios, {url:'', label:''}])}
+                      className="w-full py-2 rounded-xl text-sm opacity-70 hover:opacity-100"
+                      style={{border:'1px dashed rgba(244,234,213,0.15)'}}>
+                + добавить аудио
+              </button>
+            )}
+          </div>
         </Field>
 
         <div className="card rounded-xl p-4">

@@ -1557,6 +1557,46 @@ function HistoryTab({ data, onPracticeTap }) {
 }
 
 // ─── Шторка деталей практики ───
+function AudioSequence({ audios }) {
+  // Проигрывает список аудио по очереди. Первое стартует автоматически при монтировании
+  // (если браузер позволяет — открытие шторки = тап юзера, обычно разрешает).
+  const [idx, setIdx] = useState(0);
+  const audioRef = useRef(null);
+  useEffect(() => {
+    const el = audioRef.current;
+    if (!el) return;
+    el.play().catch(() => { /* автоплей мог быть заблокирован — пусть юзер нажмёт сам */ });
+  }, [idx]);
+  if (!audios || audios.length === 0) return null;
+  const cur = audios[idx];
+  return (
+    <div className="mb-4 p-3 rounded-xl" style={{background:'rgba(212,168,87,0.06)', border:'1px solid rgba(212,168,87,0.2)'}}>
+      <div className="flex items-center justify-between mb-1.5 text-xs">
+        <span className="opacity-70 truncate flex-1 mr-2">
+          {cur.label || `Аудио ${idx + 1}`}
+        </span>
+        <span className="opacity-50 whitespace-nowrap">{idx + 1} / {audios.length}</span>
+      </div>
+      <audio ref={audioRef} src={cur.url} controls preload="auto"
+             className="w-full" style={{height:'36px'}}
+             onEnded={() => { if (idx + 1 < audios.length) setIdx(idx + 1); }}/>
+      {audios.length > 1 && (
+        <div className="flex gap-1 mt-2">
+          {audios.map((a, i) => (
+            <button key={i} onClick={() => setIdx(i)}
+                    className="flex-1 py-1 rounded-md text-[10px] transition"
+                    style={i === idx
+                      ? {background:'rgba(212,168,87,0.25)', color:'#d4a857'}
+                      : {background:'rgba(244,234,213,0.04)', color:'rgba(244,234,213,0.5)'}}>
+              {i + 1}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDateTap }) {
   const [busy, setBusy] = useState(false);
   const accent = PALETTE[practice.palette] || PALETTE.amber;
@@ -1606,6 +1646,8 @@ function PracticeDetailSheet({ practice, entries, today, onClose, onChange, onDa
         </div>
 
         {practice.description && <p className="text-sm opacity-80 mb-4 whitespace-pre-wrap">{practice.description}</p>}
+
+        <AudioSequence audios={practice.audios}/>
 
         {practice.media_url && (
           <a href={practice.media_url} target="_blank" rel="noopener noreferrer"

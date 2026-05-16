@@ -330,6 +330,9 @@ def init_db():
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN rounds_count INTEGER")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN work_seconds INTEGER")
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN rest_seconds INTEGER")
+        # До 3 аудио, проигрываются по очереди при открытии практики.
+        # Хранится как JSON: [{"url": "...", "label": "..."}].
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN audios TEXT")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -773,6 +776,8 @@ class PracticeIn(BaseModel):
     palette: Optional[str] = "amber"
     media_url: Optional[str] = ""
     media_label: Optional[str] = ""
+    # До 3 аудио (url + label), проигрываются по очереди при открытии практики.
+    audios: list[dict] = Field(default_factory=list, max_length=3)
     photo: Optional[str] = None
     max_reminders: int = Field(3, ge=0, le=10)
     reminder_from: str = "08:00"
@@ -1043,6 +1048,41 @@ def _parse_tags(value) -> list:
     return [x.strip() for x in str(value).split(",") if x.strip()]
 
 
+def _parse_audios(value) -> list:
+    """JSON-строка → список {url,label}, максимум 3 валидных элемента."""
+    if not value:
+        return []
+    try:
+        import json
+        raw = json.loads(value)
+    except Exception:
+        return []
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for item in raw[:3]:
+        if not isinstance(item, dict):
+            continue
+        url = (item.get("url") or "").strip()
+        if not url:
+            continue
+        out.append({"url": url[:1000], "label": (item.get("label") or "").strip()[:200]})
+    return out
+
+
+def _audios_to_json(audios: list) -> str:
+    import json
+    cleaned = []
+    for item in (audios or [])[:3]:
+        if not isinstance(item, dict):
+            continue
+        url = (item.get("url") or "").strip()
+        if not url:
+            continue
+        cleaned.append({"url": url[:1000], "label": (item.get("label") or "").strip()[:200]})
+    return json.dumps(cleaned, ensure_ascii=False) if cleaned else ""
+
+
 def _tags_to_csv(tags: list) -> str:
     """Список тегов → CSV. Чистит пустые и обрезает по 64 символа."""
     if not tags:
@@ -1073,6 +1113,7 @@ def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
         "palette": row["palette"] or "amber",
         "media_url": row["media_url"] or "",
         "media_label": row["media_label"] or "",
+        "audios": _parse_audios(row["audios"]) if "audios" in row.keys() else [],
         "photo": row["photo"],
         "max_reminders": row["max_reminders"],
         "reminder_from": row["reminder_from"],
@@ -2139,13 +2180,13 @@ def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
         c.execute(
             """INSERT INTO practices
                (id, name, description, type, extras, target, unit, icon, palette, media_url, media_label,
-                photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
+                audios, photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
                 tag_frequency, tag_activity, tag_inventory, tag_location,
                 rounds_count, work_seconds, rest_seconds,
                 created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
-             body.palette, body.media_url, body.media_label, photo_value,
+             body.palette, body.media_url, body.media_label, _audios_to_json(body.audios), photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
@@ -2168,13 +2209,13 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
         extras_csv = ",".join(extras)
         c.execute(
             """UPDATE practices SET name=?, description=?, type=?, extras=?, target=?, unit=?, icon=?,
-               palette=?, media_url=?, media_label=?, photo=?, max_reminders=?,
+               palette=?, media_url=?, media_label=?, audios=?, photo=?, max_reminders=?,
                reminder_from=?, reminder_to=?, active=?, catalog_hidden=?,
                tag_frequency=?, tag_activity=?, tag_inventory=?, tag_location=?,
                rounds_count=?, work_seconds=?, rest_seconds=?
                WHERE id=?""",
             (body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
-             body.palette, body.media_url, body.media_label, photo_value,
+             body.palette, body.media_url, body.media_label, _audios_to_json(body.audios), photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
