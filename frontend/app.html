@@ -124,6 +124,7 @@ const isDone = (p, e) => {
     case 'photo':  return !!e.response_photo;
     case 'video':  return !!(e.response_video_url || '').trim();
     case 'rounds': return !!e.completed;
+    case 'timer':  return (e.count || 0) >= (p.target || 1);
     default:       return false;
   }
 };
@@ -356,6 +357,7 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
   const [draft, setDraft] = useState('');
   const [responseOpen, setResponseOpen] = useState(false);
   const [roundsOpen,   setRoundsOpen]   = useState(false);
+  const [timerOpen,    setTimerOpen]    = useState(false);
   const accent = PALETTE[practice.palette] || PALETTE.amber;
   const done = isDone(practice, entry);
   const count = entry?.count || 0;
@@ -423,6 +425,7 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
             {practice.type === 'photo' && <span>фото</span>}
             {practice.type === 'video' && <span>ссылка на видео</span>}
             {practice.type === 'rounds' && <span className="flex items-center gap-1"><Target size={11}/>{practice.rounds_count}×{practice.work_seconds}с / {practice.rest_seconds || 0}с</span>}
+            {practice.type === 'timer'  && <span className="flex items-center gap-1"><Target size={11}/>до {practice.target}с {entry?.count ? `· рекорд ${entry.count}с` : ''}</span>}
           </div>
         </div>
         {useUnifiedSheet ? (
@@ -431,6 +434,13 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
             style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
                     color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
             {done ? '✓ ответ' : 'ответ'}
+          </button>
+        ) : practice.type === 'timer' ? (
+          <button onClick={(e) => { stop(e); setTimerOpen(true); }}
+            className="px-3 py-2 rounded-full text-xs whitespace-nowrap"
+            style={{background: done ? 'linear-gradient(135deg, #d4a857, #b8902f)' : 'rgba(244,234,213,0.05)',
+                    color: done ? '#1a1410' : '#f4ead5', border: done ? 'none' : '1.5px solid rgba(244,234,213,0.15)'}}>
+            {done ? `✓ ${entry?.count || 0}с` : (entry?.count ? `${entry.count}с · ещё` : '▶ старт')}
           </button>
         ) : practice.type === 'rounds' ? (
           <button onClick={(e) => { stop(e); setRoundsOpen(true); }}
@@ -477,6 +487,16 @@ function PracticeRow({ practice, entry, onChange, onTap }) {
       <ResponseSheet practice={practice} entry={entry}
         onClose={() => setResponseOpen(false)}
         onSaved={async () => { setResponseOpen(false); await onChange(); }}/>
+    )}
+    {timerOpen && (
+      <TimerRunner practice={practice} entry={entry}
+        onClose={() => setTimerOpen(false)}
+        onSaved={async (seconds) => {
+          try { await api('/api/my/entry', { method:'POST', body: JSON.stringify({
+            practice_id: practice.id, count: seconds }) }); }
+          catch (e) { alert(e.message); }
+          await onChange();
+        }}/>
     )}
     {roundsOpen && (
       <RoundsRunner practice={practice} done={done}
@@ -649,6 +669,136 @@ function ResponseSheet({ practice, entry, onClose, onSaved }) {
         {isResponseType && (
           <p className="text-[11px] opacity-50 text-center mt-3">Прошлые дни заморожены — изменить нельзя.</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ─── Таймер (секундомер: фиксируем сколько продержался) ───
+function fmtSec(s) {
+  s = Math.max(0, Math.floor(s));
+  const m = Math.floor(s / 60), sec = s % 60;
+  return m > 0 ? `${m}:${String(sec).padStart(2, '0')}` : `${sec}с`;
+}
+
+function TimerRunner({ practice, entry, onClose, onSaved }) {
+  const accent = PALETTE[practice.palette] || PALETTE.amber;
+  const target = Math.max(1, practice.target || 60);
+  const bestToday = entry?.count || 0;
+
+  // 'idle' | 'run' | 'stopped'
+  const [phase, setPhase] = useState('idle');
+  const [elapsed, setElapsed] = useState(0);
+  const startRef = useRef(0);
+  const tickRef = useRef(null);
+  const reachedRef = useRef(false);
+
+  const stopTick = () => { if (tickRef.current) { clearInterval(tickRef.current); tickRef.current = null; } };
+  useEffect(() => () => stopTick(), []);
+
+  const start = () => {
+    setPhase('run');
+    setElapsed(0);
+    reachedRef.current = false;
+    startRef.current = Date.now();
+    playBeep(880, 180, 'square', 0.22); // старт
+    tickRef.current = setInterval(() => {
+      const e = Math.floor((Date.now() - startRef.current) / 1000);
+      setElapsed(e);
+      if (!reachedRef.current && e >= target) {
+        reachedRef.current = true;
+        // тройной аккорд — цель взята
+        playBeep(660, 220, 'sine', 0.25);
+        setTimeout(() => playBeep(880, 220, 'sine', 0.25), 230);
+        setTimeout(() => playBeep(1175, 350, 'sine', 0.28), 470);
+      }
+    }, 200);
+  };
+
+  const stopAndSave = async () => {
+    stopTick();
+    const sec = Math.floor((Date.now() - startRef.current) / 1000);
+    setElapsed(sec);
+    setPhase('stopped');
+    playBeep(330, 200, 'sine', 0.22);
+    if (sec > 0) await onSaved(sec);
+  };
+
+  const close = () => { stopTick(); onClose(); };
+
+  const reached = elapsed >= target;
+  const ratio = Math.min(1, elapsed / target);
+  const remaining = Math.max(0, target - elapsed);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center" style={{background:'rgba(0,0,0,0.7)'}} onClick={close}>
+      <div className="w-full max-w-md rounded-t-3xl p-6 fade-in" style={{background:'#161824'}} onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-4">
+          <h2 className="font-display text-2xl">{practice.icon} {practice.name}</h2>
+          <button onClick={close} className="opacity-60"><X size={20}/></button>
+        </div>
+
+        <p className="text-sm opacity-70 mb-1">Цель: {fmtSec(target)} ({target}с)</p>
+        {bestToday > 0 && (
+          <p className="text-sm mb-3" style={{color: bestToday >= target ? '#a3b18a' : accent}}>
+            Сегодня лучший: <b>{fmtSec(bestToday)}</b> ({bestToday}с)
+            {bestToday >= target ? ' — день засчитан ✓' : ` · до цели ещё ${target - bestToday}с`}
+          </p>
+        )}
+        {practice.description && <p className="text-xs opacity-60 mb-4">{practice.description}</p>}
+
+        <div className="rounded-2xl p-6 text-center mb-4" style={{background:'rgba(244,234,213,0.04)', border:'1px solid rgba(244,234,213,0.1)'}}>
+          <div className="text-xs uppercase tracking-widest opacity-60 mb-2">
+            {phase === 'idle'    && 'Готов?'}
+            {phase === 'run'     && (reached ? 'Цель взята — держись!' : `До цели ${remaining}с`)}
+            {phase === 'stopped' && (elapsed >= target ? 'Цель взята!' : 'Зафиксировано')}
+          </div>
+          <div className="font-display text-6xl leading-none mb-2"
+               style={{color: reached ? '#a3b18a' : accent}}>
+            {fmtSec(elapsed)}
+          </div>
+          <div className="h-1.5 rounded-full overflow-hidden mt-3" style={{background:'rgba(244,234,213,0.08)'}}>
+            <div className="h-full transition-all" style={{
+              width: `${ratio * 100}%`,
+              background: reached ? '#a3b18a' : accent,
+            }}/>
+          </div>
+        </div>
+
+        <div className="flex gap-2">
+          {phase === 'idle' && (
+            <button onClick={start}
+              className="flex-1 py-3.5 rounded-full font-medium"
+              style={{background:`linear-gradient(135deg, ${accent}, #b8902f)`, color:'#1a1410'}}>
+              ▶ Старт
+            </button>
+          )}
+          {phase === 'run' && (
+            <button onClick={stopAndSave}
+              className="flex-1 py-3.5 rounded-full font-medium"
+              style={{background:`linear-gradient(135deg, ${accent}, #b8902f)`, color:'#1a1410'}}>
+              ⏹ Стоп и сохранить
+            </button>
+          )}
+          {phase === 'stopped' && (
+            <>
+              <button onClick={start}
+                className="flex-1 py-3.5 rounded-full font-medium"
+                style={{background:`linear-gradient(135deg, ${accent}, #b8902f)`, color:'#1a1410'}}>
+                ▶ Ещё попытка
+              </button>
+              <button onClick={close}
+                className="px-5 py-3.5 rounded-full text-sm"
+                style={{background:'rgba(244,234,213,0.06)', color:'#f4ead5'}}>
+                Закрыть
+              </button>
+            </>
+          )}
+        </div>
+
+        <p className="text-[11px] opacity-40 text-center mt-3">
+          Сохраняется лучший результат за день. Повторная попытка перезапишет рекорд только если он выше.
+        </p>
       </div>
     </div>
   );

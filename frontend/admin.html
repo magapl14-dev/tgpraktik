@@ -231,6 +231,7 @@ function PracticesList({ practices, categories, onEdit, onCreate, onChange }) {
                     p.type === 'photo'  ? 'Фото'  :
                     p.type === 'video'  ? 'Видео' :
                     p.type === 'rounds' ? `Раунды ${p.rounds_count || '?'}×${p.work_seconds || '?'}с / ${p.rest_seconds || 0}с` :
+                    p.type === 'timer'  ? `Таймер до ${p.target || '?'}с` :
                     p.type
                   }</span>
                   <span>•</span>
@@ -937,6 +938,7 @@ function UserHistoryModal({ user, onClose }) {
                       : t === 'photo' ? !!e.response_photo
                       : t === 'video' ? !!(e.response_video_url || '').trim()
                       : t === 'rounds' ? !!e.completed
+                      : t === 'timer'  ? (e.count || 0) >= (e.practice_target || 1)
                       : false;
                     const hasText  = !!(e.response_text  || '').trim();
                     const hasPhoto = !!e.response_photo;
@@ -954,6 +956,7 @@ function UserHistoryModal({ user, onClose }) {
                             {t === 'photo'  && (done ? '✓ фото' : '—')}
                             {t === 'video'  && (done ? '✓ видео' : '—')}
                             {t === 'rounds' && (done ? '✓ раунды пройдены' : '— не завершено')}
+                            {t === 'timer'  && `${e.count || 0}с / ${e.practice_target || 1}с`}
                           </span>
                           <span className="text-[10px] opacity-40 hidden md:inline">{fmtTs(e.ts)}</span>
                         </div>
@@ -1027,7 +1030,9 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     try {
       const payload = {
         ...v,
-        target: v.type === 'count' ? parseInt(v.target) || 1 : null,
+        target: v.type === 'count' ? parseInt(v.target) || 1
+              : v.type === 'timer' ? Math.max(1, parseInt(v.target) || 60)
+              : null,
         rounds_count: v.type === 'rounds' ? Math.max(1, parseInt(v.rounds_count) || 1) : null,
         work_seconds: v.type === 'rounds' ? Math.max(1, parseInt(v.work_seconds) || 1) : null,
         rest_seconds: v.type === 'rounds' ? Math.max(0, parseInt(v.rest_seconds) || 0) : null,
@@ -1078,6 +1083,7 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
             <TypeBtn active={v.type==='photo'} onClick={() => set('type','photo')} title="Фото" sub="Загрузить снимок"/>
             <TypeBtn active={v.type==='video'} onClick={() => set('type','video')} title="Видео" sub="Ссылка на видео"/>
             <TypeBtn active={v.type==='rounds'} onClick={() => set('type','rounds')} title="Раунды" sub="Интервалы со звуком"/>
+            <TypeBtn active={v.type==='timer'} onClick={() => set('type','timer')} title="Таймер" sub="Секундомер (например, планка)"/>
           </div>
         </Field>
 
@@ -1110,6 +1116,21 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
               <input type="text" value={v.unit} onChange={(e) => set('unit', e.target.value)} placeholder="мин, кругов, стр" className="input-field w-full px-4 py-3 rounded-xl"/>
             </Field>
           </div>
+        )}
+
+        {v.type === 'timer' && (
+          <>
+            <p className="text-xs opacity-60 -mt-2">
+              Секундомер. Юзер запускает таймер, останавливает когда сдался — лучший результат за день сохраняется.
+              День засчитан, если рекорд ≥ цели.
+            </p>
+            <Field label="Цель, сек">
+              <input type="number" min="1" value={v.target}
+                onChange={(e) => set('target', e.target.value)}
+                placeholder="300"
+                className="input-field w-full px-4 py-3 rounded-xl"/>
+            </Field>
+          </>
         )}
 
         {v.type === 'rounds' && (

@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS practices (
   id             TEXT PRIMARY KEY,
   name           TEXT NOT NULL,
   description    TEXT,
-  type           TEXT NOT NULL,         -- 'binary' | 'count' | 'text' | 'photo' | 'video' | 'rounds' — главный (определяет «день засчитан»)
+  type           TEXT NOT NULL,         -- 'binary' | 'count' | 'text' | 'photo' | 'video' | 'rounds' | 'timer' — главный (определяет «день засчитан»)
   extras         TEXT,                  -- CSV из 'text','photo','video': опциональные доп. поля (юзер может, но не обязан)
   target         INTEGER,
   unit           TEXT,
@@ -761,7 +761,7 @@ def save_photo_from_input(value: Optional[str], practice_id: str) -> Optional[st
 class PracticeIn(BaseModel):
     name: str
     description: Optional[str] = ""
-    type: Literal["binary", "count", "text", "photo", "video", "rounds"] = "binary"
+    type: Literal["binary", "count", "text", "photo", "video", "rounds", "timer"] = "binary"
     extras: list[Literal["text", "photo", "video"]] = Field(default_factory=list)
     target: Optional[int] = None
     unit: Optional[str] = ""
@@ -891,6 +891,8 @@ def is_done(practice_row, entry_row) -> bool:
         return bool((entry_row["response_video_url"] or "").strip())
     if t == "rounds":
         return bool(entry_row["completed"])
+    if t == "timer":
+        return (entry_row["count"] or 0) >= (practice_row["target"] or 1)
     return False
 
 
@@ -902,7 +904,8 @@ DONE_SQL = (
     " OR (p.type='text'   AND e.response_text IS NOT NULL AND TRIM(e.response_text) != '')"
     " OR (p.type='photo'  AND e.response_photo IS NOT NULL AND e.response_photo != '')"
     " OR (p.type='video'  AND e.response_video_url IS NOT NULL AND TRIM(e.response_video_url) != '')"
-    " OR (p.type='rounds' AND e.completed=1))"
+    " OR (p.type='rounds' AND e.completed=1)"
+    " OR (p.type='timer'  AND e.count >= COALESCE(p.target,1)))"
 )
 
 
@@ -1783,6 +1786,10 @@ def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
         ).fetchone()
         completed = int(body.completed) if body.completed is not None else (existing["completed"] if existing else 0)
         count = body.count if body.count is not None else (existing["count"] if existing else 0)
+        # Для type='timer' храним лучший результат за день: новая попытка не должна
+        # ухудшать рекорд (если только юзер не выставляет count=0 явно, чтобы сбросить).
+        if practice["type"] == "timer" and body.count is not None and body.count > 0 and existing:
+            count = max(int(body.count), int(existing["count"] or 0))
 
         # Поля ответа
         resp_text = body.response_text if body.response_text is not None \
@@ -1844,6 +1851,8 @@ def upsert_entry(body: EntryIn, user: dict = Depends(current_user)):
                 day_counted = bool((resp_video or "").strip())
             elif t == "rounds":
                 day_counted = (completed == 1)
+            elif t == "timer":
+                day_counted = (count >= target)
             else:
                 day_counted = False
             if day_counted:
