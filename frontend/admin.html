@@ -255,7 +255,9 @@ function PracticesList({ practices, categories, onEdit, onCreate, onChange }) {
                     p.type
                   }</span>
                   <span>•</span>
-                  <span>{p.max_reminders} напом. {p.reminder_from}–{p.reminder_to}</span>
+                  <span>{Array.isArray(p.reminder_times) && p.reminder_times.length > 0
+                    ? `точно: ${p.reminder_times.join(', ')}`
+                    : `${p.max_reminders} напом. ${p.reminder_from}–${p.reminder_to}`}</span>
                   {!p.active && <><span>•</span><span style={{color:'#e88080'}}>выключена</span></>}
                 </div>
                 {cats.length > 0 && (
@@ -1097,6 +1099,8 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     max_reminders: practice.max_reminders ?? 3,
     reminder_from: practice.reminder_from || '08:00',
     reminder_to: practice.reminder_to || '21:00',
+    // Текстовое представление (CSV "07:00, 13:30, 20:00"); парсится при сохранении.
+    reminder_times_csv: Array.isArray(practice.reminder_times) ? practice.reminder_times.join(', ') : '',
     active: practice.active !== false,
     catalog_hidden: practice.catalog_hidden === true,
     extras: practice.extras || [],
@@ -1117,8 +1121,27 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
     if (!v.name.trim()) return;
     setSaving(true);
     try {
+      // "07:00, 13:30, 20:00" → ["07:00","13:30","20:00"]; невалидное отбрасываем,
+      // дубли удаляем, сортируем. Backend ещё раз провалидирует — но фронт должен
+      // отдавать чистое.
+      const reminder_times = (v.reminder_times_csv || '')
+        .split(/[,;\s]+/)
+        .map((s) => s.trim())
+        .filter((s) => /^\d{1,2}:\d{2}$/.test(s))
+        .filter((s) => {
+          const [h, m] = s.split(':').map(Number);
+          return h >= 0 && h <= 23 && m >= 0 && m <= 59;
+        })
+        .map((s) => {
+          const [h, m] = s.split(':').map(Number);
+          return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+        });
+      const reminder_times_unique = Array.from(new Set(reminder_times)).sort();
+
+      const { reminder_times_csv, ...rest } = v;
       const payload = {
-        ...v,
+        ...rest,
+        reminder_times: reminder_times_unique,
         target: v.type === 'count' ? parseInt(v.target) || 1
               : v.type === 'timer' ? Math.max(1, parseInt(v.target) || 60)
               : null,
@@ -1426,19 +1449,35 @@ function PracticeForm({ practice, categories, onClose, onSaved }) {
 
         <div className="card rounded-xl p-4">
           <div className="text-xs uppercase tracking-wider opacity-50 mb-3">Напоминания</div>
-          <Field label={`Сколько раз в день: ${v.max_reminders}`}>
-            <input type="range" min="0" max="10" value={v.max_reminders} onChange={(e) => set('max_reminders', parseInt(e.target.value))} className="w-full"/>
-            <div className="flex justify-between text-[10px] opacity-50 mt-1">
-              <span>0 — не напоминать</span><span>10 — макс</span>
-            </div>
+
+          <Field label="Точные времена (через запятую)">
+            <input
+              type="text"
+              placeholder="например: 07:00, 13:30, 20:00"
+              value={v.reminder_times_csv}
+              onChange={(e) => set('reminder_times_csv', e.target.value)}
+              className="input-field w-full px-4 py-3 rounded-xl"
+            />
+            <p className="text-[11px] opacity-50 mt-1 leading-relaxed">
+              Если заполнено — бот шлёт ровно в эти моменты (точность ±2.5 мин), а параметры ниже игнорируются. Оставь пустым — будет работать «окно с N пингами».
+            </p>
           </Field>
-          <div className="grid grid-cols-2 gap-3 mt-4">
-            <Field label="С">
-              <input type="time" value={v.reminder_from} onChange={(e) => set('reminder_from', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
+
+          <div className={v.reminder_times_csv.trim() ? 'opacity-40 pointer-events-none' : ''}>
+            <Field label={`Сколько раз в день: ${v.max_reminders}`}>
+              <input type="range" min="0" max="10" value={v.max_reminders} onChange={(e) => set('max_reminders', parseInt(e.target.value))} className="w-full"/>
+              <div className="flex justify-between text-[10px] opacity-50 mt-1">
+                <span>0 — не напоминать</span><span>10 — макс</span>
+              </div>
             </Field>
-            <Field label="До">
-              <input type="time" value={v.reminder_to} onChange={(e) => set('reminder_to', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
-            </Field>
+            <div className="grid grid-cols-2 gap-3 mt-4">
+              <Field label="С">
+                <input type="time" value={v.reminder_from} onChange={(e) => set('reminder_from', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
+              </Field>
+              <Field label="До">
+                <input type="time" value={v.reminder_to} onChange={(e) => set('reminder_to', e.target.value)} className="input-field w-full px-4 py-3 rounded-xl"/>
+              </Field>
+            </div>
           </div>
         </div>
 

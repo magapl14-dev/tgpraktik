@@ -336,6 +336,10 @@ def init_db():
         # Индивидуальный план раундов: JSON-список [{work, rest, sound_url?}].
         # Если задан — переопределяет rounds_count/work_seconds/rest_seconds в RoundsRunner.
         _alter_safe(c, "ALTER TABLE practices ADD COLUMN rounds_plan TEXT")
+        # Точные времена напоминаний: CSV "HH:MM,HH:MM,...". Если задано —
+        # игнорирует max_reminders и окно reminder_from/reminder_to, шлёт ровно
+        # в каждое перечисленное время (с допуском в один тик планировщика).
+        _alter_safe(c, "ALTER TABLE practices ADD COLUMN reminder_times TEXT")
         _migrate_photos_to_disk(c)
         _backfill_telegram_identities(c)
 
@@ -1305,6 +1309,9 @@ class PracticeIn(BaseModel):
     max_reminders: int = Field(3, ge=0, le=10)
     reminder_from: str = "08:00"
     reminder_to: str = "21:00"
+    # Точные времена напоминаний: список "HH:MM". Если непустой — игнорируют
+    # max_reminders и окно, шлём ровно в каждое время (с допуском в один тик).
+    reminder_times: list[str] = Field(default_factory=list, max_length=20)
     active: bool = True
     catalog_hidden: bool = False
     category_ids: list[str] = Field(default_factory=list)
@@ -1571,6 +1578,43 @@ def _parse_tags(value) -> list:
     return [x.strip() for x in str(value).split(",") if x.strip()]
 
 
+def _parse_reminder_times(value) -> list:
+    """CSV точных времён напоминаний из БД → отсортированный список ['HH:MM',...].
+    Невалидные элементы отбрасываются."""
+    if not value:
+        return []
+    out = []
+    for raw in str(value).split(","):
+        s = raw.strip()
+        if not s:
+            continue
+        try:
+            datetime.strptime(s, "%H:%M")
+        except ValueError:
+            continue
+        out.append(s)
+    return sorted(set(out))
+
+
+def _reminder_times_to_csv(times: list) -> str:
+    """Список ['HH:MM',...] → CSV. Невалидные/дубли отбрасываются, итог сортируется."""
+    if not times:
+        return ""
+    out = []
+    seen = set()
+    for t in times:
+        s = (str(t) or "").strip()
+        if not s or s in seen:
+            continue
+        try:
+            datetime.strptime(s, "%H:%M")
+        except ValueError:
+            continue
+        seen.add(s)
+        out.append(s)
+    return ",".join(sorted(out))
+
+
 def _parse_audios(value) -> list:
     """JSON-строка → список {url,label}, максимум 3 валидных элемента."""
     if not value:
@@ -1695,6 +1739,7 @@ def practice_to_dict(row, category_ids: Optional[list] = None) -> dict:
         "max_reminders": row["max_reminders"],
         "reminder_from": row["reminder_from"],
         "reminder_to": row["reminder_to"],
+        "reminder_times": _parse_reminder_times(row["reminder_times"]) if "reminder_times" in row.keys() else [],
         "active": bool(row["active"]),
         "catalog_hidden": bool(row["catalog_hidden"]) if "catalog_hidden" in row.keys() else False,
         "category_ids": category_ids or [],
@@ -2932,14 +2977,15 @@ def admin_create(body: PracticeIn, user: dict = Depends(current_admin)):
         c.execute(
             """INSERT INTO practices
                (id, name, description, type, extras, target, unit, icon, palette, media_url, media_label,
-                audios, photo, max_reminders, reminder_from, reminder_to, active, catalog_hidden,
+                audios, photo, max_reminders, reminder_from, reminder_to, reminder_times, active, catalog_hidden,
                 tag_frequency, tag_activity, tag_inventory, tag_location,
                 rounds_count, work_seconds, rest_seconds, rounds_plan,
                 created_at, created_by)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (pid, body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, _audios_to_json(body.audios), photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
+             _reminder_times_to_csv(body.reminder_times),
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
              _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
@@ -2962,13 +3008,14 @@ def admin_update(pid: str, body: PracticeIn, user: dict = Depends(current_admin)
         c.execute(
             """UPDATE practices SET name=?, description=?, type=?, extras=?, target=?, unit=?, icon=?,
                palette=?, media_url=?, media_label=?, audios=?, photo=?, max_reminders=?,
-               reminder_from=?, reminder_to=?, active=?, catalog_hidden=?,
+               reminder_from=?, reminder_to=?, reminder_times=?, active=?, catalog_hidden=?,
                tag_frequency=?, tag_activity=?, tag_inventory=?, tag_location=?,
                rounds_count=?, work_seconds=?, rest_seconds=?, rounds_plan=?
                WHERE id=?""",
             (body.name, body.description, body.type, extras_csv, body.target, body.unit, body.icon,
              body.palette, body.media_url, body.media_label, _audios_to_json(body.audios), photo_value,
              body.max_reminders, body.reminder_from, body.reminder_to,
+             _reminder_times_to_csv(body.reminder_times),
              int(body.active), int(body.catalog_hidden),
              _tags_to_csv(body.tag_frequency), _tags_to_csv(body.tag_activity),
              _tags_to_csv(body.tag_inventory), _tags_to_csv(body.tag_location),
@@ -3599,8 +3646,13 @@ async def on_leave_cb(cq: CallbackQuery):
 
 # ─── ПЛАНИРОВЩИК НАПОМИНАНИЙ ──────────────────────────────────────────────
 async def reminders_tick():
-    """Запускается каждые 30 минут. Для каждой подписки решаем, шлём ли напоминание,
-    с учётом TZ юзера, его mute_until и окна reminder_from..reminder_to."""
+    """Запускается каждые 5 минут. Для каждой подписки решаем, шлём ли напоминание.
+    Два режима:
+      • Точные времена (reminder_times задан) — шлём ровно в каждое перечисленное
+        время. count в reminders_sent работает как индекс «сколько уже отправлено
+        сегодня», следующее срабатывание = когда now >= reminder_times[count].
+      • Окно (как раньше) — max_reminders пингов размазаны по [reminder_from..to]
+        с минимальным гэпом max(30, window/max_r) минут."""
     if not bot:
         return
     server_now_ts = int(datetime.now(TZ).timestamp())
@@ -3610,7 +3662,7 @@ async def reminders_tick():
         rows = c.execute("""
             SELECT up.user_id, u.tz, u.mute_until,
                    p.id AS practice_id, p.name, p.type, p.target,
-                   p.max_reminders, p.reminder_from, p.reminder_to,
+                   p.max_reminders, p.reminder_from, p.reminder_to, p.reminder_times,
                    up.period_end
             FROM user_practices up
             JOIN practices p ON p.id = up.practice_id
@@ -3649,28 +3701,46 @@ async def reminders_tick():
         if r["type"] == "count" and done_row and (done_row["count"] or 0) >= (r["target"] or 1):
             continue
         sent = (sent_row["count"] if sent_row else 0) or 0
-        max_r = r["max_reminders"] or 0
-        if max_r == 0 or sent >= max_r:
-            continue
-        try:
-            t_from = datetime.strptime(r["reminder_from"] or "08:00", "%H:%M").time()
-            t_to = datetime.strptime(r["reminder_to"] or "21:00", "%H:%M").time()
-        except Exception:
-            t_from, t_to = time(8, 0), time(21, 0)
-        if not (t_from <= u_cur_t <= t_to):
-            continue
-        window_min = (datetime.combine(date.today(), t_to) - datetime.combine(date.today(), t_from)).total_seconds() / 60
-        min_gap_min = max(30, int(window_min / max_r))
-        last_at = sent_row["last_at"] if sent_row else None
-        if last_at and (server_now_ts - last_at) < min_gap_min * 60:
-            continue
+
+        # ── Режим «точные времена» ─────────────────────────────────────
+        exact_times = _parse_reminder_times(r["reminder_times"])
+        if exact_times:
+            if sent >= len(exact_times):
+                continue
+            try:
+                next_t = datetime.strptime(exact_times[sent], "%H:%M").time()
+            except ValueError:
+                continue
+            # Срабатываем, как только текущее время дотянулось до следующего.
+            # Допуск — один тик (5 мин), при пропуске тика догоним.
+            if u_cur_t < next_t:
+                continue
+            total_count = len(exact_times)
+        else:
+            # ── Режим «окно» ───────────────────────────────────────────
+            max_r = r["max_reminders"] or 0
+            if max_r == 0 or sent >= max_r:
+                continue
+            try:
+                t_from = datetime.strptime(r["reminder_from"] or "08:00", "%H:%M").time()
+                t_to = datetime.strptime(r["reminder_to"] or "21:00", "%H:%M").time()
+            except Exception:
+                t_from, t_to = time(8, 0), time(21, 0)
+            if not (t_from <= u_cur_t <= t_to):
+                continue
+            window_min = (datetime.combine(date.today(), t_to) - datetime.combine(date.today(), t_from)).total_seconds() / 60
+            min_gap_min = max(30, int(window_min / max_r))
+            last_at = sent_row["last_at"] if sent_row else None
+            if last_at and (server_now_ts - last_at) < min_gap_min * 60:
+                continue
+            total_count = max_r
 
         try:
             text = f"⏰ Напомню про практику: <b>{r['name']}</b>"
             if r["type"] == "count":
                 done_cnt = (done_row["count"] if done_row else 0) or 0
                 text += f"\nПрогресс: {done_cnt}/{r['target']}"
-            text += f"\n\nНапоминание {sent + 1} из {max_r} на сегодня."
+            text += f"\n\nНапоминание {sent + 1} из {total_count} на сегодня."
             await bot.send_message(uid, text, parse_mode="HTML", reply_markup=webapp_kb("Открыть"))
             with db() as c:
                 c.execute(
@@ -3882,9 +3952,10 @@ async def on_startup():
         # Параллельно крутим polling бота
         asyncio.create_task(dp.start_polling(bot))
 
-        # Планировщик: напоминания каждые 30 мин, ежедневная проверка периодов
+        # Планировщик: напоминания каждые 5 мин (для точности «точных времён»
+        # ±2.5 мин), ежедневная проверка периодов.
         scheduler = AsyncIOScheduler(timezone=TZ)
-        scheduler.add_job(reminders_tick, "interval", minutes=30,
+        scheduler.add_job(reminders_tick, "interval", minutes=5,
                           next_run_time=datetime.now(TZ) + timedelta(seconds=30))
         scheduler.add_job(period_check_tick, "cron", hour=10, minute=0,
                           next_run_time=datetime.now(TZ) + timedelta(seconds=60))
