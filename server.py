@@ -3646,13 +3646,17 @@ async def on_leave_cb(cq: CallbackQuery):
 
 # ─── ПЛАНИРОВЩИК НАПОМИНАНИЙ ──────────────────────────────────────────────
 async def reminders_tick():
-    """Запускается каждые 5 минут. Для каждой подписки решаем, шлём ли напоминание.
-    Два режима:
+    """Запускается каждые 5 минут. Решает, кому и про что напомнить.
+    Два режима выбора срабатывания:
       • Точные времена (reminder_times задан) — шлём ровно в каждое перечисленное
         время. count в reminders_sent работает как индекс «сколько уже отправлено
         сегодня», следующее срабатывание = когда now >= reminder_times[count].
-      • Окно (как раньше) — max_reminders пингов размазаны по [reminder_from..to]
-        с минимальным гэпом max(30, window/max_r) минут."""
+      • Окно — max_reminders пингов размазаны по [reminder_from..to] с
+        минимальным гэпом max(30, window/max_r) минут.
+
+    Группировка: за один тик все «созревшие» практики одного юзера объединяются
+    в ОДНО сообщение (не 15 отдельных). reminders_sent обновляется для каждой
+    практики из группы — счётчики идут параллельно."""
     if not bot:
         return
     server_now_ts = int(datetime.now(TZ).timestamp())
@@ -3670,22 +3674,21 @@ async def reminders_tick():
             WHERE p.active=1
         """).fetchall()
 
-    sent_now = 0
+    # Первый проход: собираем что нужно отправить, по юзерам.
+    pending = {}  # uid -> list of dicts (что показать)
+    user_today = {}  # uid -> "YYYY-MM-DD" по его TZ (для UPDATE reminders_sent)
+
     for r in rows:
         uid = r["user_id"]
-        # Пауза напоминаний?
         if r["mute_until"] and r["mute_until"] > server_now_ts:
             continue
-        # Часовой пояс юзера
         tz = _safe_tz(r["tz"]) or TZ
         u_now = datetime.now(tz)
         u_today = u_now.strftime("%Y-%m-%d")
         u_cur_t = u_now.time()
-        # Период подписки: проверка относительно «сегодня по TZ юзера»
         if r["period_end"] and r["period_end"] < u_today:
             continue
 
-        # Проверка факта выполнения и лимитов делаем коротким запросом
         with db() as c:
             done_row = c.execute(
                 "SELECT completed, count FROM entries WHERE user_id=? AND practice_id=? AND date=?",
@@ -3711,8 +3714,6 @@ async def reminders_tick():
                 next_t = datetime.strptime(exact_times[sent], "%H:%M").time()
             except ValueError:
                 continue
-            # Срабатываем, как только текущее время дотянулось до следующего.
-            # Допуск — один тик (5 мин), при пропуске тика догоним.
             if u_cur_t < next_t:
                 continue
             total_count = len(exact_times)
@@ -3735,29 +3736,57 @@ async def reminders_tick():
                 continue
             total_count = max_r
 
+        done_cnt = (done_row["count"] if done_row else 0) or 0
+        pending.setdefault(uid, []).append({
+            "practice_id": r["practice_id"],
+            "name": r["name"],
+            "type": r["type"],
+            "target": r["target"],
+            "done_cnt": done_cnt,
+            "sent": sent,
+            "total_count": total_count,
+        })
+        user_today[uid] = u_today
+
+    # Второй проход: одно сообщение на юзера, обновление reminders_sent пачкой.
+    sent_now = 0
+    for uid, items in pending.items():
+        u_today = user_today[uid]
         try:
-            text = f"⏰ Напомню про практику: <b>{r['name']}</b>"
-            if r["type"] == "count":
-                done_cnt = (done_row["count"] if done_row else 0) or 0
-                text += f"\nПрогресс: {done_cnt}/{r['target']}"
-            text += f"\n\nНапоминание {sent + 1} из {total_count} на сегодня."
+            if len(items) == 1:
+                it = items[0]
+                text = f"⏰ Напомню про практику: <b>{it['name']}</b>"
+                if it["type"] == "count":
+                    text += f"\nПрогресс: {it['done_cnt']}/{it['target']}"
+                text += f"\n\nНапоминание {it['sent'] + 1} из {it['total_count']} на сегодня."
+            else:
+                lines = [f"⏰ Сейчас по плану <b>{len(items)} практик</b>:"]
+                for it in items:
+                    line = f"• {it['name']}"
+                    if it["type"] == "count":
+                        line += f" — {it['done_cnt']}/{it['target']}"
+                    lines.append(line)
+                lines.append("")
+                lines.append("Открой приложение и отметь, что сделал.")
+                text = "\n".join(lines)
             await bot.send_message(uid, text, parse_mode="HTML", reply_markup=webapp_kb("Открыть"))
             with db() as c:
-                c.execute(
-                    """INSERT INTO reminders_sent (user_id, practice_id, date, count, last_at)
-                       VALUES (?,?,?,1,?)
-                       ON CONFLICT(user_id, practice_id, date) DO UPDATE SET
-                         count = count + 1, last_at = excluded.last_at""",
-                    (uid, r["practice_id"], u_today, server_now_ts),
-                )
-            sent_now += 1
+                for it in items:
+                    c.execute(
+                        """INSERT INTO reminders_sent (user_id, practice_id, date, count, last_at)
+                           VALUES (?,?,?,1,?)
+                           ON CONFLICT(user_id, practice_id, date) DO UPDATE SET
+                             count = count + 1, last_at = excluded.last_at""",
+                        (uid, it["practice_id"], u_today, server_now_ts),
+                    )
+            sent_now += len(items)
         except Exception as e:
             log.warning("send to %s failed: %s", uid, e)
             if "blocked" in str(e).lower() or "Forbidden" in str(e):
                 with db() as c:
                     c.execute("DELETE FROM user_practices WHERE user_id=?", (uid,))
     if sent_now:
-        log.info("Sent %d reminders", sent_now)
+        log.info("Sent %d reminders across %d users", sent_now, len(pending))
 
 
 async def period_check_tick():
