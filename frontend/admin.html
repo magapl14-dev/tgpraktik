@@ -625,6 +625,9 @@ function MotivationsTab({ practices, programs }) {
   const [target, setTarget] = useState(''); // 'practice:<id>' or 'program:<id>'
   const [items, setItems] = useState([]);
   const [creating, setCreating] = useState(false);
+  const [editingId, setEditingId] = useState(null);  // id мотивашки, текст которой сейчас правится
+  const [editingText, setEditingText] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
   const [err, setErr] = useState('');
 
   const load = async () => {
@@ -643,9 +646,43 @@ function MotivationsTab({ practices, programs }) {
     await load();
   };
 
+  const startEdit = (m) => {
+    setEditingId(m.id);
+    setEditingText(m.text);
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditingText('');
+  };
+  const saveEdit = async (m) => {
+    const text = editingText.trim();
+    if (!text) { alert('Текст не может быть пустым'); return; }
+    if (text === m.text) { cancelEdit(); return; }
+    setSavingEdit(true);
+    try {
+      // PUT требует все поля — kind/value/target сохраняем как были, меняется только текст.
+      await api(`/api/admin/motivations/${m.id}`, {
+        method:'PUT',
+        body: JSON.stringify({
+          practice_id: m.practice_id || null,
+          program_id: m.program_id || null,
+          kind: m.kind,
+          value: m.value,
+          text,
+        }),
+      });
+      cancelEdit();
+      await load();
+    } catch (e) {
+      alert(e.message);
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   return (
     <div>
-      <p className="opacity-60 text-sm mb-4">Тексты, которые бот шлёт юзеру в моменты: старт практики/программы, достижение стрика на N дней, пропуск N дней подряд.</p>
+      <p className="opacity-60 text-sm mb-4">Тексты, которые бот шлёт юзеру в моменты: старт практики/программы, достижение стрика на N дней, пропуск N дней подряд. Кликни по тексту, чтобы отредактировать.</p>
       <Field label="Цель">
         <select value={target} onChange={(e) => setTarget(e.target.value)}
           className="input-field w-full px-4 py-3 rounded-xl">
@@ -673,15 +710,45 @@ function MotivationsTab({ practices, programs }) {
             <p className="opacity-50 text-center py-8 text-sm">Пока ни одной. Добавь — бот будет выбирать случайную из подходящих.</p>
           ) : (
             <div className="space-y-2">
-              {items.map((m) => (
-                <div key={m.id} className="card rounded-xl p-3 flex items-start gap-3">
-                  <div className="text-xs uppercase tracking-wider opacity-60 flex-shrink-0 pt-0.5">
-                    {m.kind === 'start' ? 'старт' : m.kind === 'streak' ? `стрик ${m.value}` : `пропуск ${m.value}`}
+              {items.map((m) => {
+                const isEditing = editingId === m.id;
+                return (
+                  <div key={m.id} className="card rounded-xl p-3 flex items-start gap-3">
+                    <div className="text-xs uppercase tracking-wider opacity-60 flex-shrink-0 pt-0.5 w-20">
+                      {m.kind === 'start' ? 'старт' : m.kind === 'streak' ? `стрик ${m.value}` : `пропуск ${m.value}`}
+                    </div>
+                    {isEditing ? (
+                      <div className="flex-1 flex flex-col gap-2">
+                        <textarea
+                          value={editingText}
+                          onChange={(e) => setEditingText(e.target.value)}
+                          rows={3}
+                          autoFocus
+                          className="input-field w-full px-3 py-2 rounded-lg text-sm"
+                        />
+                        <div className="flex gap-2 justify-end">
+                          <button onClick={cancelEdit} disabled={savingEdit}
+                            className="px-3 py-1 text-xs rounded-full opacity-60">Отмена</button>
+                          <button onClick={() => saveEdit(m)} disabled={savingEdit}
+                            className="px-3 py-1 text-xs rounded-full"
+                            style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+                            {savingEdit ? 'Сохраняю…' : 'Сохранить'}
+                          </button>
+                        </div>
+                      </div>
+                    ) : (
+                      <>
+                        <button onClick={() => startEdit(m)}
+                          className="flex-1 text-sm whitespace-pre-wrap text-left hover:opacity-80 transition-opacity"
+                          title="Кликни, чтобы отредактировать">
+                          {m.text}
+                        </button>
+                        <button onClick={() => remove(m.id)} className="text-xs opacity-60 flex-shrink-0" style={{color:'#e88080'}}>×</button>
+                      </>
+                    )}
                   </div>
-                  <div className="flex-1 text-sm whitespace-pre-wrap">{m.text}</div>
-                  <button onClick={() => remove(m.id)} className="text-xs opacity-60" style={{color:'#e88080'}}>×</button>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </>

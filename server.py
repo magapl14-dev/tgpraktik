@@ -3320,6 +3320,28 @@ def admin_create_motivations_bulk(body: MotivationBulkIn, user: dict = Depends(c
     return {"ok": True, "created": len(texts)}
 
 
+@app.put("/api/admin/motivations/{mid}")
+def admin_update_motivation(mid: int, body: MotivationIn, user: dict = Depends(current_admin)):
+    """Редактирование мотивашки: текст, тип триггера (start/streak/miss), число дней.
+    Цель (practice_id/program_id) тоже можно сменить — на случай если мотивашка
+    привязана не туда. Валидация — та же, что и при создании."""
+    text = (body.text or "").strip()
+    if not text:
+        raise HTTPException(400, "Текст мотивашки не может быть пустым")
+    with db() as c:
+        existing = c.execute("SELECT 1 FROM motivations WHERE id=?", (mid,)).fetchone()
+        if not existing:
+            raise HTTPException(404, "Мотивашка не найдена")
+        _validate_motivation_target(c, body.practice_id, body.program_id)
+        c.execute(
+            """UPDATE motivations
+               SET practice_id=?, program_id=?, kind=?, value=?, text=?
+               WHERE id=?""",
+            (body.practice_id, body.program_id, body.kind, body.value, text, mid),
+        )
+    return {"ok": True}
+
+
 @app.delete("/api/admin/motivations/{mid}")
 def admin_delete_motivation(mid: int, user: dict = Depends(current_admin)):
     with db() as c:
