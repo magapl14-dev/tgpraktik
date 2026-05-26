@@ -71,6 +71,18 @@ const api = async (path, opts = {}) => {
   return data;
 };
 
+// Куда вернуть после успешного входа.
+// Принимаем только same-origin путь, начинающийся с '/' (без '//' — защита от open redirect).
+// Дефолт — '/app'.
+const getReturnTo = () => {
+  try {
+    const raw = new URLSearchParams(location.search).get('return_to');
+    if (raw && raw.startsWith('/') && !raw.startsWith('//')) return raw;
+  } catch (e) {}
+  return '/app';
+};
+const RETURN_TO = getReturnTo();
+
 // Callback из Telegram Login Widget
 window.onTelegramAuth = async (user) => {
   $('loading').textContent = 'входим...';
@@ -83,7 +95,7 @@ window.onTelegramAuth = async (user) => {
       body: JSON.stringify(user),
       headers: { 'X-User-TZ': (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch(e) { return ''; } })() },
     });
-    window.location.replace('/app');
+    window.location.replace(RETURN_TO);
   } catch (e) {
     showError(e.message);
     $('widget-host').classList.remove('hidden');
@@ -91,10 +103,10 @@ window.onTelegramAuth = async (user) => {
 };
 
 (async () => {
-  // Если уже залогинен — на /app
+  // Если уже залогинен — сразу на return_to (по умолчанию /app)
   try {
     await api('/api/me');
-    window.location.replace('/app');
+    window.location.replace(RETURN_TO);
     return;
   } catch (e) {
     // не залогинен — продолжаем

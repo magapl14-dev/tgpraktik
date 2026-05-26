@@ -116,7 +116,6 @@ function App() {
   const [historyUser, setHistoryUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
-  const [botUsername, setBotUsername] = useState('');
 
   const refresh = async () => {
     const [m, p, s, cats, progs] = await Promise.all([
@@ -128,11 +127,6 @@ function App() {
 
   useEffect(() => {
     (async () => {
-      // bot_username тянем отдельно: чтобы при ошибке авторизации
-      // мы могли показать рабочую кнопку «Открыть в Telegram».
-      fetch('/api/auth/config').then(r => r.json()).then(c => {
-        if (c && c.bot_username) setBotUsername(c.bot_username);
-      }).catch(() => {});
       try { await refresh(); } catch (e) { setErr(e.message); }
       setLoading(false);
     })();
@@ -143,27 +137,20 @@ function App() {
   };
 
   if (loading) return <div className="text-center pt-20 opacity-60 font-display text-xl">загружаем...</div>;
-  if (err) {
-    const tgUrl = botUsername ? `https://t.me/${botUsername}?start=admin` : '';
-    return (
-      <div className="text-center pt-20 px-6">
-        <p className="opacity-60 mb-2 font-display text-xl">Доступ закрыт</p>
-        <p className="text-sm opacity-40 mb-6">{err}</p>
-        {tgUrl ? (
-          <a href={tgUrl} target="_blank" rel="noopener noreferrer"
-             className="inline-block px-6 py-3 rounded-full font-medium"
-             style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
-            Открыть в Telegram
-          </a>
-        ) : (
-          <p className="text-xs opacity-30">Только для админов. Открой через Telegram-бота.</p>
-        )}
-        <p className="text-xs opacity-30 mt-4">
-          Админка работает только из Telegram Mini App — открой бота и нажми меню.
-        </p>
-      </div>
-    );
-  }
+  if (err) return (
+    <div className="text-center pt-20 px-6">
+      <p className="opacity-60 mb-2 font-display text-xl">Доступ закрыт</p>
+      <p className="text-sm opacity-40 mb-6">{err}</p>
+      <a href="/login?return_to=/admin"
+         className="inline-block px-6 py-3 rounded-full font-medium"
+         style={{background:'linear-gradient(135deg, #d4a857, #b8902f)', color:'#1a1410'}}>
+        Войти через Telegram
+      </a>
+      <p className="text-xs opacity-30 mt-4 leading-relaxed">
+        Откроется виджет Telegram — подтвердишь вход и вернёшься в админку.
+      </p>
+    </div>
+  );
 
   if (editing !== null) {
     return <PracticeForm practice={editing} categories={categories} onClose={() => setEditing(null)} onSaved={async () => { setEditing(null); await refresh(); }}/>;
